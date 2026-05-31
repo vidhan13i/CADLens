@@ -1,0 +1,6 @@
+/* Global reset — all design tokens live in App.css */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
