@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pydantic
+pytesseract
+opencv-python
+numpy
+pdf2image
+ultralytics
