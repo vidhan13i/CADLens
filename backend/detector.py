@@ -17,12 +17,13 @@ from typing import List, Dict, Any, Tuple, Optional
 
 
 # ── Tunable constants ─────────────────────────────────────────────────────────
-MIN_OCR_CONF = 20           # confidence for text tokens (words, R-nums, etc.)
-MIN_NUMERIC_CONF = 15       # lower confidence allowed ONLY for pure-numeric tokens near dim lines
-MIN_MEANINGFUL_CHARS = 1    # allow single-digit dims like '1', '2', '4'
+MIN_OCR_CONF = 45           # confidence for text tokens (words, R-nums, etc.)
+# lower confidence allowed ONLY for pure-numeric tokens near dim lines
+MIN_NUMERIC_CONF = 15
+MIN_MEANINGFUL_CHARS = 2    # allow single-digit dims like '1', '2', '4'
 TITLE_BLOCK_FRAC = 0.85
-BORDER_FRAC_X = 0.03
-BORDER_FRAC_Y = 0.03
+BORDER_FRAC_X = 0.05
+BORDER_FRAC_Y = 0.05
 GROUP_X_GAP = 20
 GROUP_Y_DELTA = 12
 DEDUP_RADIUS = 25
@@ -52,6 +53,33 @@ _CLEAN_PREFIX = re.compile(r'^[_\-\.\|\\\/ ]+')
 # Slash-joined tokens like '30/10' are OCR merges of two separate dims — reject
 _SLASH_JOINED = re.compile(r'^\d+\.?\d*\/\d+\.?\d*$')
 
+
+def correct_ocr_text(text: str) -> str:
+    """
+    Correct common OCR misreads for CAD annotations (diameter, tolerance, degrees).
+    """
+    t = text.strip()
+    if not t:
+        return t
+
+    # 1. Diameter symbol (Ø) misreads
+    # Often read as 'o', 'O', 'Q', '0' followed by digits. E.g. "o50", "O32", "Q16", "020" (if not a decimal or short single digit)
+    t = re.sub(r'^[oOQ0]\s*([1-7, 11, 12]\d*(?:\.\d+)?)$', r'Ø\1', t)
+    t = re.sub(r'^[ø∅]\s*', 'Ø', t)
+
+    # 2. Tolerance symbol (±) misreads
+    # Often read as '+-', '+ -', '+=', '* -', '*-', etc.
+    t = re.sub(
+        r'^(?:\+[-=]|\+\s*[-=]|\*[-=]|\*\s*[-=]|\+\/-\s*)\s*(\d)', r'±\1', t)
+
+    # NEW: Specific rule to catch a single '*' followed by a decimal (e.g., *0.05 -> ±0.05) [3]
+    t = re.sub(r'^\*\s*(\d+\.\d+)', r'±\1', t)
+
+    # 3. Degree symbol (°) misreads
+    # Often read as 'o' or '*' or '°' at the end of a number (e.g. "45o", "30*")
+    t = re.sub(r'(\d+)\s*[o\*]$', r'\1°', t)
+
+    return t
 
 
 # ── Text classification ───────────────────────────────────────────────────────
@@ -227,6 +255,138 @@ def _deduplicate(annotations: List[Dict], radius: float = DEDUP_RADIUS) -> List[
     return kept
 
 
+def _get_segmented_ocr_tokens(
+    gray: np.ndarray,
+    thresh: np.ndarray,
+    scale_factor: float,
+    x_min: int, x_max: int,
+    y_min: int, y_max: int,
+    lines: List[Tuple],
+    contours: List,
+    near_line_dist: int
+) -> List[Dict]:
+    """
+    Find candidate text regions, crop them, run high-accuracy single-line OCR,
+    and return the detected tokens mapped back to global page coordinates.
+    """
+    # Dilate thresholded image to merge text characters horizontally
+    kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
+    dilated = cv2.dilate(thresh, kernel_dilate, iterations=1)
+
+    # Find contours of candidate text regions
+    cnts, _ = cv2.findContours(
+        dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    tokens = []
+    img_h, img_w = gray.shape
+
+    for cnt in cnts:
+        x, y, w, h = cv2.boundingRect(cnt)
+
+        # Filter bounding boxes to target typical dimension/note text blocks
+        if not (8 <= h <= 80 and 8 <= w <= 600):
+            continue
+
+        # Spatial filtering
+        if y < y_min or (y + h) > y_max:
+            continue
+        if x < x_min or (x + w) > x_max:
+            continue
+
+        # Extract ROI with a margin
+        margin = 6
+        x1 = max(0, x - margin)
+        y1 = max(0, y - margin)
+        x2 = min(img_w, x + w + margin)
+        y2 = min(img_h, y + h + margin)
+
+        crop = gray[y1:y2, x1:x2]
+        if crop.size == 0:
+            continue
+
+        # Pad with a white border
+        pad_val = 10
+        crop_padded = cv2.copyMakeBorder(
+            crop, pad_val, pad_val, pad_val, pad_val,
+            cv2.BORDER_CONSTANT, value=255
+        )
+
+        # Resize the crop 2x
+        crop_resized = cv2.resize(
+            crop_padded, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+
+        # Adaptive thresholding specifically on the crop
+        crop_thresh = cv2.adaptiveThreshold(
+            crop_resized, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY,
+            15, 5
+        )
+
+        # OCR with PSM 7 (single line)
+        ocr_data = pytesseract.image_to_data(
+            crop_thresh, config="--psm 7", output_type=pytesseract.Output.DICT
+        )
+
+        # Convert crop coordinates back to global coords
+        for i in range(len(ocr_data["text"])):
+            text = ocr_data["text"][i].strip()
+            conf = float(ocr_data["conf"][i])
+
+            if not text or conf < MIN_NUMERIC_CONF:
+                continue
+
+            # Coordinates inside the crop (at 2x scale)
+            c_left = ocr_data["left"][i]
+            c_top = ocr_data["top"][i]
+            c_width = ocr_data["width"][i]
+            c_height = ocr_data["height"][i]
+
+            # Map back: divide by 2, subtract padding, add global offset
+            g_left = int((c_left / 2.0) - pad_val + x1)
+            g_top = int((c_top / 2.0) - pad_val + y1)
+            g_width = int(c_width / 2.0)
+            g_height = int(c_height / 2.0)
+            g_cx = float(g_left + g_width / 2.0)
+            g_cy = float(g_top + g_height / 2.0)
+
+            is_dim_candidate = bool(re.search(r'[\dØø∅Rr]', text))
+            if conf < MIN_OCR_CONF:
+                if not is_dim_candidate:
+                    continue
+                near_line = False
+                for lx1, ly1, lx2, ly2 in lines:
+                    dx, dy = lx2 - lx1, ly2 - ly1
+                    if dx == dy == 0:
+                        d = ((g_cx - lx1) ** 2 + (g_cy - ly1) ** 2) ** 0.5
+                    else:
+                        t_val = max(
+                            0.0, min(1.0, ((g_cx - lx1) * dx + (g_cy - ly1) * dy) / (dx * dx + dy * dy)))
+                        d = ((g_cx - (lx1 + t_val * dx)) ** 2 +
+                             (g_cy - (ly1 + t_val * dy)) ** 2) ** 0.5
+                    if d < near_line_dist:
+                        near_line = True
+                        break
+                if not near_line:
+                    continue
+
+            if _TITLE_BLOCK_REJECT.search(text):
+                continue
+
+            feat_x, feat_y = _find_nearest_feature(g_cx, g_cy, lines, contours)
+
+            tokens.append({
+                "text":   text,
+                "x":      g_left,
+                "w":      g_width,
+                "cy":     g_cy,
+                "conf":   conf,
+                "feat_x": float(feat_x),
+                "feat_y": float(feat_y),
+            })
+    return tokens
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def detect_annotations(image: np.ndarray) -> List[Dict[str, Any]]:
@@ -268,14 +428,21 @@ def detect_annotations(image: np.ndarray) -> List[Dict[str, Any]]:
         for ln in raw_lines:
             lines.append(tuple(int(v) for v in ln[0]))
 
-    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    cnts, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contours = [c for c in cnts if 200 < cv2.contourArea(c) < img_w * img_h * 0.04]
+    _, thresh = cv2.threshold(
+        gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    cnts, _ = cv2.findContours(
+        thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours = [c for c in cnts if 200 <
+                cv2.contourArea(c) < img_w * img_h * 0.04]
 
     # ── OCR preprocessing ────────────────────────────────────────────────────
+    # Bilateral filter to reduce noise (like hatching/gridlines) while preserving text edges
+    denoised = cv2.bilateralFilter(gray, d=9, sigmaColor=75, sigmaSpace=75)
+
     # Upscale for better OCR on small text
     scale_factor = 1.5
-    enlarged = cv2.resize(gray, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC)
+    enlarged = cv2.resize(denoised, None, fx=scale_factor,
+                          fy=scale_factor, interpolation=cv2.INTER_CUBIC)
 
     # Sharpen
     kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
@@ -289,14 +456,25 @@ def detect_annotations(image: np.ndarray) -> List[Dict[str, Any]]:
         31, 10
     )
 
+    # ── Segmented Crop-based OCR ─────────────────────────────────────────────
+    # Run high-accuracy segmented single-line OCR on candidate text regions
+    raw_tokens = _get_segmented_ocr_tokens(
+        gray=gray,
+        thresh=thresh,
+        scale_factor=scale_factor,
+        x_min=x_min, x_max=x_max,
+        y_min=y_min, y_max=y_max,
+        lines=lines,
+        contours=contours,
+        near_line_dist=near_line_dist
+    )
+
     # ── Full-page OCR ────────────────────────────────────────────────────────
     # Use PSM 11 (Sparse text) which is far superior for scattered CAD blueprint labels than PSM 6 (Block)
-    ocr = pytesseract.image_to_data(
+    '''ocr = pytesseract.image_to_data(
         processed, config="--psm 11", output_type=pytesseract.Output.DICT
     )
     n = len(ocr["text"])
-
-    raw_tokens: List[Dict] = []
 
     def _near_any_line(cx: float, cy: float) -> bool:
         """True if (cx,cy) is within near_line_dist of any detected dimension line."""
@@ -305,8 +483,10 @@ def detect_annotations(image: np.ndarray) -> List[Dict[str, Any]]:
             if dx == dy == 0:
                 d = ((cx - x1) ** 2 + (cy - y1) ** 2) ** 0.5
             else:
-                t = max(0.0, min(1.0, ((cx - x1) * dx + (cy - y1) * dy) / (dx * dx + dy * dy)))
-                d = ((cx - (x1 + t * dx)) ** 2 + (cy - (y1 + t * dy)) ** 2) ** 0.5
+                t = max(
+                    0.0, min(1.0, ((cx - x1) * dx + (cy - y1) * dy) / (dx * dx + dy * dy)))
+                d = ((cx - (x1 + t * dx)) ** 2 +
+                     (cy - (y1 + t * dy)) ** 2) ** 0.5
             if d < near_line_dist:
                 return True
         return False
@@ -333,21 +513,21 @@ def detect_annotations(image: np.ndarray) -> List[Dict[str, Any]]:
                 continue
             # Must be near a structural line to prevent random character noise
             # (Note: we bypass this for high-confidence tokens so text notes aren't discarded)
-            left   = int(ocr["left"][i]   / scale_factor)
-            top    = int(ocr["top"][i]    / scale_factor)
-            width  = int(ocr["width"][i]  / scale_factor)
+            left = int(ocr["left"][i] / scale_factor)
+            top = int(ocr["top"][i] / scale_factor)
+            width = int(ocr["width"][i] / scale_factor)
             height = int(ocr["height"][i] / scale_factor)
-            cx_tok = float(left + width  / 2.0)
-            cy_tok = float(top  + height / 2.0)
+            cx_tok = float(left + width / 2.0)
+            cy_tok = float(top + height / 2.0)
             if not _near_any_line(cx_tok, cy_tok):
                 continue
 
-        left   = int(ocr["left"][i]   / scale_factor)
-        top    = int(ocr["top"][i]    / scale_factor)
-        width  = int(ocr["width"][i]  / scale_factor)
+        left = int(ocr["left"][i] / scale_factor)
+        top = int(ocr["top"][i] / scale_factor)
+        width = int(ocr["width"][i] / scale_factor)
         height = int(ocr["height"][i] / scale_factor)
-        cx_tok = float(left + width  / 2.0)
-        cy_tok = float(top  + height / 2.0)
+        cx_tok = float(left + width / 2.0)
+        cy_tok = float(top + height / 2.0)
 
         # ── Spatial filter ───────────────────────────────────────────────────
         if top < y_min or top > y_max:
@@ -372,13 +552,16 @@ def detect_annotations(image: np.ndarray) -> List[Dict[str, Any]]:
         })
 
     # ── Group adjacent tokens on the same line ───────────────────────────────
-    grouped = _group_tokens(raw_tokens, y_delta=group_y_delta, x_gap=group_x_gap)
+    grouped = _group_tokens(
+        raw_tokens, y_delta=group_y_delta, x_gap=group_x_gap)
 
     # ── Classify and filter ──────────────────────────────────────────────────
     classified: List[Dict] = []
     for g in grouped:
         # Clean OCR artefact prefix chars (_-R30 → R30)
         clean_text = _CLEAN_PREFIX.sub("", g["text"]).strip()
+        # Apply OCR correction heuristics (e.g. translate o50 to Ø50)
+        clean_text = correct_ocr_text(clean_text)
         if not clean_text:
             continue
         # Reject title-block boilerplate that slipped through grouping
@@ -399,4 +582,4 @@ def detect_annotations(image: np.ndarray) -> List[Dict[str, Any]]:
     # ── Deduplicate overlapping annotations ──────────────────────────────────
     results = _deduplicate(classified, radius=dedup_radius)
 
-    return results
+    return results'''
