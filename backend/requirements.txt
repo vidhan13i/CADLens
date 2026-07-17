@@ -24,3 +24,7 @@ openpyxl==3.1.5
 
 # ── YOLO (optional – remove if not using a trained model) ─────────────────────
 ultralytics==8.3.154
+
+# requirements.txt
+
+PyMuPDF          # ← This provides the 'fitz' module

@@ -1,12 +1,5 @@
 """
 detector.py — CAD annotation detector
-Improvements over v1:
-  • Spatial exclusion of title-block (bottom 18%) and border gutters
-  • Token grouping: adjacent OCR tokens on the same line are merged
-  • Stricter quality filters (min 2 meaningful chars, conf >= 45)
-  • Richer classification regexes: R\d, Ø\d, H/h fit codes, section labels
-  • Nearby-detection deduplication (50 px radius)
-  • All coords guaranteed plain Python float for pymongo
 """
 
 import re
@@ -17,19 +10,17 @@ from typing import List, Dict, Any, Tuple, Optional
 
 
 # ── Tunable constants ─────────────────────────────────────────────────────────
-MIN_OCR_CONF = 45           # confidence for text tokens (words, R-nums, etc.)
-# lower confidence allowed ONLY for pure-numeric tokens near dim lines
+MIN_OCR_CONF = 45
 MIN_NUMERIC_CONF = 15
-MIN_MEANINGFUL_CHARS = 2    # allow single-digit dims like '1', '2', '4'
+MIN_MEANINGFUL_CHARS = 2
 TITLE_BLOCK_FRAC = 0.85
 BORDER_FRAC_X = 0.05
 BORDER_FRAC_Y = 0.05
 GROUP_X_GAP = 20
 GROUP_Y_DELTA = 12
 DEDUP_RADIUS = 25
-NEAR_LINE_DIST = 80         # px — numeric token within this dist of a dim line = valid
+NEAR_LINE_DIST = 80
 
-# Phrases / patterns that belong to the title block or frame — reject everywhere
 _TITLE_BLOCK_REJECT = re.compile(
     r'ALL DIMENSIONS|IN\s+mm\b|DRAWN BY|CHECKED BY|APPROVED BY|CUSTOMER|MATERIAL|'
     r'HEAT TREATMENT|HARDNESS|DRAWING NO|SHEET|CUST FILE|REV\b|PVT\.?\s*LTD|'
@@ -38,109 +29,71 @@ _TITLE_BLOCK_REJECT = re.compile(
     re.IGNORECASE,
 )
 
-# Common English words that OCR picks up from notes/labels — never a CAD annotation
 _ENGLISH_WORDS = re.compile(
     r'^(are|the|and|for|not|all|nos|with|this|that|from|into|each|item|date|rev)$',
     re.IGNORECASE,
 )
 
-# Trailing punctuation artifacts: '1)', '2.', '(3' etc.
 _PUNCT_ARTIFACT = re.compile(r'^\d+[\)\.]$|^[\(\[\{]\d+$')
-
-# Strip common OCR artefact chars from the start of a token
 _CLEAN_PREFIX = re.compile(r'^[_\-\.\|\\\/ ]+')
-
-# Slash-joined tokens like '30/10' are OCR merges of two separate dims — reject
 _SLASH_JOINED = re.compile(r'^\d+\.?\d*\/\d+\.?\d*$')
 
 
 def correct_ocr_text(text: str) -> str:
-    """
-    Correct common OCR misreads for CAD annotations (diameter, tolerance, degrees).
-    """
     t = text.strip()
     if not t:
         return t
-
-    # 1. Diameter symbol (Ø) misreads
-    # Often read as 'o', 'O', 'Q', '0' followed by digits. E.g. "o50", "O32", "Q16", "020" (if not a decimal or short single digit)
     t = re.sub(r'^[oOQ0]\s*([1-7, 11, 12]\d*(?:\.\d+)?)$', r'Ø\1', t)
     t = re.sub(r'^[ø∅]\s*', 'Ø', t)
-
-    # 2. Tolerance symbol (±) misreads
-    # Often read as '+-', '+ -', '+=', '* -', '*-', etc.
     t = re.sub(
         r'^(?:\+[-=]|\+\s*[-=]|\*[-=]|\*\s*[-=]|\+\/-\s*)\s*(\d)', r'±\1', t)
-
-    # NEW: Specific rule to catch a single '*' followed by a decimal (e.g., *0.05 -> ±0.05) [3]
     t = re.sub(r'^\*\s*(\d+\.\d+)', r'±\1', t)
-
-    # 3. Degree symbol (°) misreads
-    # Often read as 'o' or '*' or '°' at the end of a number (e.g. "45o", "30*")
     t = re.sub(r'(\d+)\s*[o\*]$', r'\1°', t)
-
     return t
 
 
-# ── Text classification ───────────────────────────────────────────────────────
-
 def _classify_text(text: str) -> Optional[str]:
-    """
-    Classify a CAD annotation string.
-    Returns None only for clearly non-annotation content (pure letters like 'C', 'V').
-    In CAD drawings, single digits like '1', '2', '4' ARE valid dimension values.
-    """
     t = text.strip()
     if not t:
         return None
 
-    clean = re.sub(r'[\s\W]', '', t)   # alphanumeric only for length check
+    clean = re.sub(r'[\s\W]', '', t)
     if not clean:
         return None
 
-    # Skip pure single letters (section/view markers: 'A', 'B', 'C', 'D')
-    # But allow single digits — '1', '2' etc. are valid CAD dimensions
     if re.fullmatch(r'[A-Za-z]', clean):
         return None
 
-    # Skip common English words OCR reads from notes/labels
     if _ENGLISH_WORDS.match(t):
         return None
 
-    # Skip punctuation artifacts like '1)', '2.', '(3'
     if _PUNCT_ARTIFACT.match(t):
         return None
 
-    # Slash-joined OCR artifact  (30/10, 15/5 …)
     if _SLASH_JOINED.match(t):
         return None
 
-    # VIEW / SECTION labels
     if re.search(r'^VIEW\s+[A-Z]|^SECTION\s|^SEC\.', t, re.IGNORECASE):
         return None
 
-    # ── Tolerance FIRST — '0.150' → Tolerance not Dimension
     if re.search(
         r'[±]'
         r'|\+\s*\d+[\.,]\d+'
         r'|[-\u2212]\s*\d+[\.,]\d+'
-        r'|^\s*0\.\d+'           # bare decimal  0.150, 0.05 …
+        r'|^\s*0\.\d+'
         r'|\(\s*[+\-]',
         t
     ):
         return "Tolerance"
 
-    # ── Surface Finish
     if re.search(r'\bRa\b|\bRz\b|\bRt\b|\bRq\b', t, re.IGNORECASE):
         return "Surface Finish"
 
-    # ── GD&T
     if re.search(r'^\s*0\.\d+\s+[A-Z]\s*$|[⊙⊖⊕⊗⌀○△□◇⊥∥∠]', t):
         return "GD&T"
 
-    # ── Dimension — broad match covers all numeric CAD annotations
     if re.search(
-        r'[\d]'                    # any digit — covers '20', '1', 'R3', 'Ø39'
+        r'[\d]'
         r'|[Øø∅]'
         r'|[Rr]\s*\d'
         r'|[Hh]\d'
@@ -151,21 +104,17 @@ def _classify_text(text: str) -> Optional[str]:
     ):
         return "Dimension"
 
-    # ── General note: 3+ meaningful chars
     if len(clean) >= 3:
         return "Note"
 
     return None
 
 
-# ── Nearest structural feature ────────────────────────────────────────────────
-
 def _find_nearest_feature(
     tx: float, ty: float,
     lines: List[Tuple],
     contours: List,
 ) -> Tuple[float, float]:
-    """Return (feature_x, feature_y) — closest line endpoint or contour centroid."""
     best_dist = float("inf")
     best_pt: Tuple[float, float] = (tx, ty)
 
@@ -189,17 +138,14 @@ def _find_nearest_feature(
     return best_pt
 
 
-# ── Token grouping ────────────────────────────────────────────────────────────
-
-def _group_tokens(raw_tokens: List[Dict], y_delta: int = GROUP_Y_DELTA, x_gap: int = GROUP_X_GAP) -> List[Dict]:
-    """
-    Merge adjacent OCR tokens that are on the same line and close horizontally.
-    This rebuilds 'Ø39 H8 (+0.039' into a single annotation string.
-    """
+def _group_tokens(
+    raw_tokens: List[Dict],
+    y_delta: int = GROUP_Y_DELTA,
+    x_gap: int = GROUP_X_GAP,
+) -> List[Dict]:
     if not raw_tokens:
         return []
 
-    # sort by top-y, then left-x
     tokens = sorted(raw_tokens, key=lambda t: (t["cy"], t["x"]))
     groups: List[Dict] = []
     used = [False] * len(tokens)
@@ -239,10 +185,10 @@ def _group_tokens(raw_tokens: List[Dict], y_delta: int = GROUP_Y_DELTA, x_gap: i
     return groups
 
 
-# ── Deduplication ─────────────────────────────────────────────────────────────
-
-def _deduplicate(annotations: List[Dict], radius: float = DEDUP_RADIUS) -> List[Dict]:
-    """Remove annotations whose centres are within `radius` px of a kept one."""
+def _deduplicate(
+    annotations: List[Dict],
+    radius: float = DEDUP_RADIUS,
+) -> List[Dict]:
     kept: List[Dict] = []
     for ann in annotations:
         duplicate = False
@@ -263,17 +209,11 @@ def _get_segmented_ocr_tokens(
     y_min: int, y_max: int,
     lines: List[Tuple],
     contours: List,
-    near_line_dist: int
+    near_line_dist: int,
 ) -> List[Dict]:
-    """
-    Find candidate text regions, crop them, run high-accuracy single-line OCR,
-    and return the detected tokens mapped back to global page coordinates.
-    """
-    # Dilate thresholded image to merge text characters horizontally
     kernel_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
     dilated = cv2.dilate(thresh, kernel_dilate, iterations=1)
 
-    # Find contours of candidate text regions
     cnts, _ = cv2.findContours(
         dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -283,17 +223,13 @@ def _get_segmented_ocr_tokens(
     for cnt in cnts:
         x, y, w, h = cv2.boundingRect(cnt)
 
-        # Filter bounding boxes to target typical dimension/note text blocks
         if not (8 <= h <= 80 and 8 <= w <= 600):
             continue
-
-        # Spatial filtering
         if y < y_min or (y + h) > y_max:
             continue
         if x < x_min or (x + w) > x_max:
             continue
 
-        # Extract ROI with a margin
         margin = 6
         x1 = max(0, x - margin)
         y1 = max(0, y - margin)
@@ -304,31 +240,27 @@ def _get_segmented_ocr_tokens(
         if crop.size == 0:
             continue
 
-        # Pad with a white border
         pad_val = 10
         crop_padded = cv2.copyMakeBorder(
             crop, pad_val, pad_val, pad_val, pad_val,
-            cv2.BORDER_CONSTANT, value=255
+            cv2.BORDER_CONSTANT, value=255,
         )
 
-        # Resize the crop 2x
         crop_resized = cv2.resize(
             crop_padded, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
 
-        # Adaptive thresholding specifically on the crop
         crop_thresh = cv2.adaptiveThreshold(
             crop_resized, 255,
             cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
             cv2.THRESH_BINARY,
-            15, 5
+            15, 5,
         )
 
-        # OCR with PSM 7 (single line)
         ocr_data = pytesseract.image_to_data(
-            crop_thresh, config="--psm 7", output_type=pytesseract.Output.DICT
+            crop_thresh, config="--psm 7",
+            output_type=pytesseract.Output.DICT,
         )
 
-        # Convert crop coordinates back to global coords
         for i in range(len(ocr_data["text"])):
             text = ocr_data["text"][i].strip()
             conf = float(ocr_data["conf"][i])
@@ -336,13 +268,11 @@ def _get_segmented_ocr_tokens(
             if not text or conf < MIN_NUMERIC_CONF:
                 continue
 
-            # Coordinates inside the crop (at 2x scale)
             c_left = ocr_data["left"][i]
             c_top = ocr_data["top"][i]
             c_width = ocr_data["width"][i]
             c_height = ocr_data["height"][i]
 
-            # Map back: divide by 2, subtract padding, add global offset
             g_left = int((c_left / 2.0) - pad_val + x1)
             g_top = int((c_top / 2.0) - pad_val + y1)
             g_width = int(c_width / 2.0)
@@ -351,19 +281,27 @@ def _get_segmented_ocr_tokens(
             g_cy = float(g_top + g_height / 2.0)
 
             is_dim_candidate = bool(re.search(r'[\dØø∅Rr]', text))
+
             if conf < MIN_OCR_CONF:
                 if not is_dim_candidate:
                     continue
                 near_line = False
                 for lx1, ly1, lx2, ly2 in lines:
-                    dx, dy = lx2 - lx1, ly2 - ly1
-                    if dx == dy == 0:
+                    dx = lx2 - lx1
+                    dy = ly2 - ly1
+                    if dx == 0 and dy == 0:
                         d = ((g_cx - lx1) ** 2 + (g_cy - ly1) ** 2) ** 0.5
                     else:
                         t_val = max(
-                            0.0, min(1.0, ((g_cx - lx1) * dx + (g_cy - ly1) * dy) / (dx * dx + dy * dy)))
-                        d = ((g_cx - (lx1 + t_val * dx)) ** 2 +
-                             (g_cy - (ly1 + t_val * dy)) ** 2) ** 0.5
+                            0.0,
+                            min(1.0,
+                                ((g_cx - lx1) * dx + (g_cy - ly1) * dy)
+                                / (dx * dx + dy * dy)),
+                        )
+                        d = (
+                            (g_cx - (lx1 + t_val * dx)) ** 2
+                            + (g_cy - (ly1 + t_val * dy)) ** 2
+                        ) ** 0.5
                     if d < near_line_dist:
                         near_line = True
                         break
@@ -373,7 +311,8 @@ def _get_segmented_ocr_tokens(
             if _TITLE_BLOCK_REJECT.search(text):
                 continue
 
-            feat_x, feat_y = _find_nearest_feature(g_cx, g_cy, lines, contours)
+            feat_x, feat_y = _find_nearest_feature(
+                g_cx, g_cy, lines, contours)
 
             tokens.append({
                 "text":   text,
@@ -384,6 +323,7 @@ def _get_segmented_ocr_tokens(
                 "feat_x": float(feat_x),
                 "feat_y": float(feat_y),
             })
+
     return tokens
 
 
@@ -392,23 +332,35 @@ def _get_segmented_ocr_tokens(
 def detect_annotations(image: np.ndarray) -> List[Dict[str, Any]]:
     """
     Detect CAD annotation text from a BGR page image.
-
-    Returns list of dicts:
-        {text, type, x, y, feature_x, feature_y}
-    All numeric fields are plain Python float — safe for MongoDB.
+    Always returns a list (empty if nothing found) — never None.
     """
+    # ✅ Guard against bad input
+    if image is None or image.size == 0:
+        return []
+
+    try:
+        return _detect_annotations_impl(image)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(
+            "detect_annotations failed: %s", e, exc_info=True)
+        return []  # ✅ Never return None
+
+
+def _detect_annotations_impl(image: np.ndarray) -> List[Dict[str, Any]]:
+    """Core detection logic — separated so detect_annotations can catch all errors."""
+
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     img_h, img_w = gray.shape
 
-    # Scale thresholds dynamically based on image height (normalized to 1200px baseline)
+    # Scale thresholds dynamically
     scale = img_h / 1200.0
-    group_y_delta = int(max(6, GROUP_Y_DELTA * scale))
+    group_y_delta = int(max(6,  GROUP_Y_DELTA * scale))
     group_x_gap = int(max(15, GROUP_X_GAP * scale))
     dedup_radius = int(max(15, DEDUP_RADIUS * scale))
     near_line_dist = int(max(30, NEAR_LINE_DIST * scale))
 
     # ── Spatial exclusion zones ──────────────────────────────────────────────
-    # Landscape drawings use the full vertical area; portrait drawings standardly have title blocks at bottom
     is_landscape = img_w > img_h
     current_title_block_frac = 0.97 if is_landscape else TITLE_BLOCK_FRAC
 
@@ -432,124 +384,22 @@ def detect_annotations(image: np.ndarray) -> List[Dict[str, Any]]:
         gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     cnts, _ = cv2.findContours(
         thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contours = [c for c in cnts if 200 <
-                cv2.contourArea(c) < img_w * img_h * 0.04]
-
-    # ── OCR preprocessing ────────────────────────────────────────────────────
-    # Bilateral filter to reduce noise (like hatching/gridlines) while preserving text edges
-    denoised = cv2.bilateralFilter(gray, d=9, sigmaColor=75, sigmaSpace=75)
-
-    # Upscale for better OCR on small text
-    scale_factor = 1.5
-    enlarged = cv2.resize(denoised, None, fx=scale_factor,
-                          fy=scale_factor, interpolation=cv2.INTER_CUBIC)
-
-    # Sharpen
-    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-    sharpened = cv2.filter2D(enlarged, -1, kernel)
-
-    # Adaptive threshold — clean black/white for Tesseract
-    processed = cv2.adaptiveThreshold(
-        sharpened, 255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY,
-        31, 10
-    )
+    contours = [
+        c for c in cnts
+        if 200 < cv2.contourArea(c) < img_w * img_h * 0.04
+    ]
 
     # ── Segmented Crop-based OCR ─────────────────────────────────────────────
-    # Run high-accuracy segmented single-line OCR on candidate text regions
     raw_tokens = _get_segmented_ocr_tokens(
         gray=gray,
         thresh=thresh,
-        scale_factor=scale_factor,
+        scale_factor=1.5,
         x_min=x_min, x_max=x_max,
         y_min=y_min, y_max=y_max,
         lines=lines,
         contours=contours,
-        near_line_dist=near_line_dist
+        near_line_dist=near_line_dist,
     )
-
-    # ── Full-page OCR ────────────────────────────────────────────────────────
-    # Use PSM 11 (Sparse text) which is far superior for scattered CAD blueprint labels than PSM 6 (Block)
-    '''ocr = pytesseract.image_to_data(
-        processed, config="--psm 11", output_type=pytesseract.Output.DICT
-    )
-    n = len(ocr["text"])
-
-    def _near_any_line(cx: float, cy: float) -> bool:
-        """True if (cx,cy) is within near_line_dist of any detected dimension line."""
-        for x1, y1, x2, y2 in lines:
-            dx, dy = x2 - x1, y2 - y1
-            if dx == dy == 0:
-                d = ((cx - x1) ** 2 + (cy - y1) ** 2) ** 0.5
-            else:
-                t = max(
-                    0.0, min(1.0, ((cx - x1) * dx + (cy - y1) * dy) / (dx * dx + dy * dy)))
-                d = ((cx - (x1 + t * dx)) ** 2 +
-                     (cy - (y1 + t * dy)) ** 2) ** 0.5
-            if d < near_line_dist:
-                return True
-        return False
-
-    _IS_PURE_NUMERIC = re.compile(r'^\d+(\.\d+)?$')
-
-    for i in range(n):
-        text = ocr["text"][i].strip()
-        conf = float(ocr["conf"][i])
-
-        if not text:
-            continue
-
-        is_pure_num = bool(_IS_PURE_NUMERIC.match(text))
-        is_dim_candidate = bool(re.search(r'[\dØø∅Rr]', text))
-
-        # Filter out extremely low-confidence tokens (background noise)
-        if conf < MIN_NUMERIC_CONF:
-            continue
-
-        # If it has moderate confidence but is less than MIN_OCR_CONF, allow it if it looks like a dimension near a line
-        if conf < MIN_OCR_CONF:
-            if not is_dim_candidate:
-                continue
-            # Must be near a structural line to prevent random character noise
-            # (Note: we bypass this for high-confidence tokens so text notes aren't discarded)
-            left = int(ocr["left"][i] / scale_factor)
-            top = int(ocr["top"][i] / scale_factor)
-            width = int(ocr["width"][i] / scale_factor)
-            height = int(ocr["height"][i] / scale_factor)
-            cx_tok = float(left + width / 2.0)
-            cy_tok = float(top + height / 2.0)
-            if not _near_any_line(cx_tok, cy_tok):
-                continue
-
-        left = int(ocr["left"][i] / scale_factor)
-        top = int(ocr["top"][i] / scale_factor)
-        width = int(ocr["width"][i] / scale_factor)
-        height = int(ocr["height"][i] / scale_factor)
-        cx_tok = float(left + width / 2.0)
-        cy_tok = float(top + height / 2.0)
-
-        # ── Spatial filter ───────────────────────────────────────────────────
-        if top < y_min or top > y_max:
-            continue
-        if left < x_min or left > x_max:
-            continue
-
-        # ── Title-block boilerplate reject ───────────────────────────────────
-        if _TITLE_BLOCK_REJECT.search(text):
-            continue
-
-        feat_x, feat_y = _find_nearest_feature(cx_tok, cy_tok, lines, contours)
-
-        raw_tokens.append({
-            "text":   text,
-            "x":      left,
-            "w":      width,
-            "cy":     cy_tok,
-            "conf":   conf,
-            "feat_x": float(feat_x),
-            "feat_y": float(feat_y),
-        })
 
     # ── Group adjacent tokens on the same line ───────────────────────────────
     grouped = _group_tokens(
@@ -558,18 +408,15 @@ def detect_annotations(image: np.ndarray) -> List[Dict[str, Any]]:
     # ── Classify and filter ──────────────────────────────────────────────────
     classified: List[Dict] = []
     for g in grouped:
-        # Clean OCR artefact prefix chars (_-R30 → R30)
         clean_text = _CLEAN_PREFIX.sub("", g["text"]).strip()
-        # Apply OCR correction heuristics (e.g. translate o50 to Ø50)
         clean_text = correct_ocr_text(clean_text)
         if not clean_text:
             continue
-        # Reject title-block boilerplate that slipped through grouping
         if _TITLE_BLOCK_REJECT.search(clean_text):
             continue
         ann_type = _classify_text(clean_text)
         if ann_type is None:
-            continue   # skip unclassifiable / too-short tokens
+            continue
         classified.append({
             "text":      clean_text,
             "type":      ann_type,
@@ -579,7 +426,7 @@ def detect_annotations(image: np.ndarray) -> List[Dict[str, Any]]:
             "feature_y": float(round(g["feat_y"], 1)),
         })
 
-    # ── Deduplicate overlapping annotations ──────────────────────────────────
+    # ── Deduplicate ──────────────────────────────────────────────────────────
     results = _deduplicate(classified, radius=dedup_radius)
 
-    return results'''
+    return results  # ✅ Always a list

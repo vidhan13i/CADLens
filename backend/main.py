@@ -101,13 +101,13 @@ def compute_iou(box1, box2):
     return intersection / float(area1 + area2 - intersection)
 
 
-# ── Existing balloon detection (YOLO / OpenCV) — from processing-service ──────
+# ── YOLO-based balloon detection ──────────────────────────────────────────────
 
 def _process_with_yolo(images):
     results = []
     for page_idx, page in enumerate(images):
         img = np.array(page)
-        if img.shape[2] == 3:
+        if img.ndim == 3 and img.shape[2] == 3:
             img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
@@ -121,7 +121,7 @@ def _process_with_yolo(images):
                     continue
                 w = x2 - x1
                 h = y2 - y1
-                aspect_ratio = w / h
+                aspect_ratio = w / h if h > 0 else 0
                 if aspect_ratio < 0.7 or aspect_ratio > 1.4:
                     continue
                 radius = min(w, h) / 2
@@ -143,7 +143,8 @@ def _process_with_yolo(images):
                     thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 is_circular = any(
                     cv2.arcLength(c, True) > 0
-                    and (4 * np.pi * cv2.contourArea(c) / (cv2.arcLength(c, True) ** 2)) > 0.6
+                    and (4 * np.pi * cv2.contourArea(c) /
+                         (cv2.arcLength(c, True) ** 2)) > 0.6
                     for c in cnts
                     if cv2.contourArea(c) >= 100
                 )
@@ -151,7 +152,8 @@ def _process_with_yolo(images):
                     continue
 
                 ocr_data = pytesseract.image_to_data(
-                    crop, config="--psm 6", output_type=pytesseract.Output.DICT
+                    crop, config="--psm 6",
+                    output_type=pytesseract.Output.DICT,
                 )
                 best_text, best_conf = "", -1
                 for k in range(len(ocr_data["text"])):
@@ -163,96 +165,115 @@ def _process_with_yolo(images):
 
                 if best_text:
                     scale = 1000.0 / img.shape[1]
-                    detections.append(
-                        {
-                            "box": (ix1, iy1, ix2, iy2),
-                            "x": int((ix1 + w / 2) * scale),
-                            "y": int((iy1 + h / 2) * scale),
-                            "text": best_text,
-                            "type": "balloon",
-                            "confidence": round(conf * 100, 1),
-                            "ocr_confidence": best_conf,
-                            "page": page_idx + 1,
-                        }
-                    )
+                    detections.append({
+                        "box":            (ix1, iy1, ix2, iy2),
+                        "x":              int((ix1 + w / 2) * scale),
+                        "y":              int((iy1 + h / 2) * scale),
+                        "text":           best_text,
+                        "type":           "balloon",
+                        "confidence":     round(conf * 100, 1),
+                        "ocr_confidence": best_conf,
+                        "page":           page_idx + 1,
+                    })
 
         detections.sort(key=lambda d: d["confidence"], reverse=True)
         final = []
         for det in detections:
-            if not any(compute_iou(det["box"], f["box"]) > 0.3 for f in final):
+            if not any(
+                compute_iou(det["box"], f["box"]) > 0.3 for f in final
+            ):
                 det.pop("box", None)
                 final.append(det)
         results.extend(final)
     return results
 
 
+# ── OpenCV-based balloon detection (fallback) ─────────────────────────────────
+
 def _process_with_opencv(images):
     """
-    Improved balloon detection using Contour Geometry Filtering.
-    Targets +35% accuracy by filtering for circularity, solidity, and internal text [1, 3].
+    Balloon detection using Contour Geometry Filtering.
+    Filters for circularity, solidity, aspect ratio, and internal text.
     """
     results = []
     for page_idx, page in enumerate(images):
         img = np.array(page)
-        if img.shape[4] == 3:
+
+        # ✅ Fixed: shape[2] not shape[4]
+        if img.ndim == 3 and img.shape[2] == 3:
             img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        # 1. Threshold the image ONCE to find candidate shapes [2]
         _, thresh = cv2.threshold(
             gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-        # 2. Find contours with hierarchy (RETR_CCOMP allows checking for text inside) [2]
+        # RETR_CCOMP gives hierarchy so we can check for child contours (text inside circle)
         cnts, hierarchy = cv2.findContours(
             thresh, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
 
         page_balloons = []
 
         if hierarchy is not None:
-            # hierarchy contains [Next, Previous, First_Child, Parent]
             for i, cnt in enumerate(cnts):
                 area = cv2.contourArea(cnt)
                 perimeter = cv2.arcLength(cnt, True)
                 if perimeter == 0:
                     continue
 
-                # 3. Calculate Circularity: (4 * pi * Area) / (Perimeter^2) [2, 5]
+                # Circularity: 1.0 = perfect circle
                 circularity = (4 * np.pi * area) / (perimeter ** 2)
 
-                # 4. Calculate Solidity: Area / Convex Hull Area [2]
+                # Solidity: area vs convex hull area
                 hull = cv2.convexHull(cnt)
                 hull_area = cv2.contourArea(hull)
                 solidity = float(area) / hull_area if hull_area > 0 else 0
 
-                # 5. Check Aspect Ratio (should be close to 1.0 for a circle) [2]
+                # Aspect ratio: should be ~1.0 for circles
                 x, y, w, h = cv2.boundingRect(cnt)
-                aspect_ratio = float(w) / h
+                aspect_ratio = float(w) / h if h > 0 else 0
 
-                # 6. Apply filters for valid balloons [2]
-                if circularity > 0.70 and solidity > 0.85 and 0.8 <= aspect_ratio <= 1.2:
-                    # 7. Hierarchy check: Ensure it has a 'child' (hierarchy[i][4] != -1)
-                    # This ensures there is text/content inside the circle [2]
-                    if hierarchy[i][4] != -1:
-                        # Extract ROI with padding for localized OCR [2]
-                        margin = 5
-                        x1, y1 = max(0, x - margin), max(0, y - margin)
-                        x2, y2 = min(
-                            gray.shape[6], x + w + margin), min(gray.shape, y + h + margin)
-                        roi = gray[y1:y2, x1:x2]
+                # Apply geometry filters
+                if not (
+                    circularity > 0.70
+                    and solidity > 0.85
+                    and 0.8 <= aspect_ratio <= 1.2
+                ):
+                    continue
 
-                        # Run localized OCR on the balloon crop [2]
-                        balloon_text = pytesseract.image_to_string(
-                            roi, config="--psm 10").strip()
+                # ✅ Fixed: correct hierarchy indexing
+                # hierarchy shape: (1, N, 4) → [Next, Prev, First_Child, Parent]
+                # First_Child == -1 means no child contours (no text inside)
+                if hierarchy[0][i][2] == -1:
+                    continue
 
-                        # Only keep if the detected text is numeric
-                        if balloon_text.isdigit():
-                            page_balloons.append({
-                                "text": balloon_text,
-                                "x": float(x + w/2),
-                                "y": float(y + h/2),
-                                "w": float(w),
-                                "h": float(h)
-                            })
+                # Extract ROI with padding
+                margin = 5
+                # ✅ Fixed: correct shape indexing (shape[1]=width, shape[0]=height)
+                x1 = max(0, x - margin)
+                y1 = max(0, y - margin)
+                x2 = min(gray.shape[1], x + w + margin)
+                y2 = min(gray.shape[0], y + h + margin)
+                roi = gray[y1:y2, x1:x2]
+
+                if roi.size == 0:
+                    continue
+
+                # Run localised OCR on the balloon crop
+                balloon_text = pytesseract.image_to_string(
+                    roi, config="--psm 10"
+                ).strip()
+
+                # Only keep numeric text (balloon numbers)
+                if balloon_text.isdigit():
+                    page_balloons.append({
+                        "text": balloon_text,
+                        "x":    float(x + w / 2),
+                        "y":    float(y + h / 2),
+                        "w":    float(w),
+                        "h":    float(h),
+                        "page": page_idx + 1,
+                    })
 
         results.append(page_balloons)
 
@@ -274,24 +295,25 @@ async def upload_pdf(file: UploadFile = File(...)):
     safe_name = f"{doc_id}_{file.filename}"
     pdf_path = UPLOAD_DIR / safe_name
 
-    # Save PDF
+    # Save PDF to disk
     content = await file.read()
     pdf_path.write_bytes(content)
 
-    # Convert PDF → images using PyMuPDF (fitz)
+    # Convert PDF → PIL images using PyMuPDF
     try:
-        doc = fitz.open(str(pdf_path))
+        fitz_doc = fitz.open(str(pdf_path))
         images = []
-        zoom = 300 / 72
+        zoom = 300 / 72          # 300 DPI
         matrix = fitz.Matrix(zoom, zoom)
-        for page_idx in range(len(doc)):
-            page = doc.load_page(page_idx)
-            pix = page.get_pixmap(matrix=matrix)
+
+        for page_idx in range(len(fitz_doc)):
+            fitz_page = fitz_doc.load_page(page_idx)
+            pix = fitz_page.get_pixmap(matrix=matrix)
             page_no = page_idx + 1
             img_path = UPLOAD_DIR / f"{doc_id}_page_{page_no}.png"
             pix.save(str(img_path))
-            pil_img = Image.open(str(img_path))
-            images.append(pil_img)
+            images.append(Image.open(str(img_path)))
+
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"PDF conversion failed: {e}")
@@ -305,54 +327,59 @@ async def upload_pdf(file: UploadFile = File(...)):
 
     for page_no, pil_img in enumerate(images, start=1):
 
-        # Run annotation detector
+        # Convert PIL → BGR numpy array for OpenCV / detector
         img_np = np.array(pil_img)
         if img_np.ndim == 3 and img_np.shape[2] == 3:
             img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+        elif img_np.ndim == 3 and img_np.shape[2] == 4:
+            # RGBA → BGR
+            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR)
         else:
             img_bgr = img_np
 
+        # Run annotation detector (always returns a list, never None)
         detections = detect_annotations(img_bgr)
 
-        # Assign numbers + spread
+        logger.info(
+            "Page %d: %d annotation(s) detected.", page_no, len(detections))
+
+        # Assign sequential balloon numbers and spread overlaps
         page_balloons = assign_balloon_numbers(
             detections, doc_id, page_no, start_no=balloon_counter)
         page_balloons = spread_overlapping_balloons(
             page_balloons, min_distance=40)
+
         balloon_counter += len(page_balloons)
         all_balloons.extend(page_balloons)
 
-    # Persist document
+    # Persist document record
     doc_record = {
-        "_id": ObjectId(),
-        "doc_id": doc_id,
-        "filename": file.filename,
-        "file_path": str(pdf_path),
+        "_id":         ObjectId(),
+        "doc_id":      doc_id,
+        "filename":    file.filename,
+        "file_path":   str(pdf_path),
         "upload_time": datetime.utcnow(),
-        "page_count": page_count,
+        "page_count":  page_count,
     }
     await documents_collection.insert_one(doc_record)
 
     # Persist balloons
-    balloon_ids = []
-    for b in all_balloons:
-        b["_id"] = ObjectId()
-        balloon_ids.append(b["_id"])
-
     if all_balloons:
+        for b in all_balloons:
+            b["_id"] = ObjectId()
         await balloons_collection.insert_many(all_balloons)
 
-    # Fetch back for response
+    # Fetch persisted balloons for response
     saved_balloons = []
     async for b in balloons_collection.find({"document_id": doc_id}):
         saved_balloons.append(_serialize_balloon(b))
 
     return {
         "document_id": doc_id,
-        "page_count": page_count,
-        "page_width": page_width,
+        "page_count":  page_count,
+        "page_width":  page_width,
         "page_height": page_height,
-        "balloons": saved_balloons,
+        "balloons":    saved_balloons,
     }
 
 
@@ -384,23 +411,23 @@ async def get_page_image(document_id: str, page_no: int):
 # ── POST /balloons ────────────────────────────────────────────────────────────
 @app.post("/balloons")
 async def create_balloon(payload: BalloonCreate):
-    # Find next balloon number for this document
-    count = await balloons_collection.count_documents({"document_id": payload.document_id})
+    count = await balloons_collection.count_documents(
+        {"document_id": payload.document_id})
     new_no = count + 1
 
     balloon = {
-        "_id": ObjectId(),
+        "_id":        ObjectId(),
         "document_id": payload.document_id,
         "balloon_no": new_no,
-        "text": payload.text,
-        "type": payload.type,
-        "x": payload.x,
-        "y": payload.y,
-        "feature_x": payload.feature_x,
-        "feature_y": payload.feature_y,
-        "page": payload.page,
+        "text":       payload.text,
+        "type":       payload.type,
+        "x":          payload.x,
+        "y":          payload.y,
+        "feature_x":  payload.feature_x,
+        "feature_y":  payload.feature_y,
+        "page":       payload.page,
         "description": "",
-        "remarks": "",
+        "remarks":    "",
     }
     await balloons_collection.insert_one(balloon)
     balloon["id"] = str(balloon.pop("_id"))
@@ -410,8 +437,9 @@ async def create_balloon(payload: BalloonCreate):
 # ── PUT /balloons/{balloon_id} ────────────────────────────────────────────────
 @app.put("/balloons/{balloon_id}")
 async def update_balloon(balloon_id: str, payload: BalloonUpdate):
-    update_fields = {k: v for k, v in payload.model_dump().items()
-                     if v is not None}
+    update_fields = {
+        k: v for k, v in payload.model_dump().items() if v is not None
+    }
     if not update_fields:
         raise HTTPException(status_code=400, detail="No fields to update.")
 
@@ -422,14 +450,16 @@ async def update_balloon(balloon_id: str, payload: BalloonUpdate):
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Balloon not found.")
 
-    updated = await balloons_collection.find_one({"_id": ObjectId(balloon_id)})
+    updated = await balloons_collection.find_one(
+        {"_id": ObjectId(balloon_id)})
     return _serialize_balloon(updated)
 
 
 # ── DELETE /balloons/{balloon_id} ─────────────────────────────────────────────
 @app.delete("/balloons/{balloon_id}")
 async def delete_balloon(balloon_id: str):
-    result = await balloons_collection.delete_one({"_id": ObjectId(balloon_id)})
+    result = await balloons_collection.delete_one(
+        {"_id": ObjectId(balloon_id)})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Balloon not found.")
     return {"deleted": balloon_id}
@@ -445,14 +475,18 @@ async def export_document(document_id: str):
 
     if not balloons:
         raise HTTPException(
-            status_code=404, detail="No balloons found for this document.")
+            status_code=404,
+            detail="No balloons found for this document.")
 
     out_path = str(EXPORT_DIR / f"{document_id}_balloons.xlsx")
     export_to_excel(balloons, out_path)
 
     return FileResponse(
         out_path,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        media_type=(
+            "application/vnd.openxmlformats-officedocument"
+            ".spreadsheetml.sheet"
+        ),
         filename=f"balloons_{document_id}.xlsx",
     )
 
@@ -465,35 +499,36 @@ class DetectRequest(BaseModel):
 @app.post("/detect-existing-balloons")
 async def detect_existing_balloons(req: DetectRequest):
     """
-    Run the YOLO / HoughCircles pipeline on stored page images to find
+    Run the YOLO / OpenCV pipeline on stored page images to find
     pre-drawn balloons (circles with numbers) in the drawing.
     """
-    # Collect all stored page images for this document
     page_no = 1
     pil_images = []
+
     while True:
         img_path = UPLOAD_DIR / f"{req.document_id}_page_{page_no}.png"
         if not img_path.exists():
             break
-        from PIL import Image
-
         pil_images.append(Image.open(str(img_path)))
         page_no += 1
 
     if not pil_images:
         raise HTTPException(
-            status_code=404, detail="No stored images found for this document.")
+            status_code=404,
+            detail="No stored images found for this document.")
 
     if USE_YOLO:
         results = _process_with_yolo(pil_images)
     else:
         results = _process_with_opencv(pil_images)
 
-    return {"detected_balloons": results, "method": "yolo" if USE_YOLO else "opencv"}
+    return {
+        "detected_balloons": results,
+        "method": "yolo" if USE_YOLO else "opencv",
+    }
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
