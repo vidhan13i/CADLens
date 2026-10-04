@@ -1,6 +1,26 @@
 # CADLens — AI-Powered CAD Balloon Detection & Annotation
 
-> Automatically detect, annotate, and export dimensional balloons from engineering PDF drawings using computer vision, OCR, and an interactive canvas editor.
+> Automatically detect, annotate, and export dimensional balloons from engineering PDF drawings using native PDF vector extraction, computer vision, and an interactive canvas editor.
+
+[![Python](https://img.shields.io/badge/Python-3.9–3.11-blue?logo=python)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green?logo=fastapi)](https://fastapi.tiangolo.com)
+[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react)](https://react.dev)
+[![PyMuPDF](https://img.shields.io/badge/PyMuPDF-1.28.2-orange)](https://pymupdf.readthedocs.io)
+[![MongoDB](https://img.shields.io/badge/MongoDB-6.0-47A248?logo=mongodb)](https://mongodb.com)
+
+---
+
+## ✨ What it does
+
+Upload any engineering drawing PDF and CADLens will:
+
+1. **Detect** all dimension annotations, tolerances, surface finish callouts, and notes
+2. **Number** each one with a sequential balloon (circled number with leader line)
+3. **Populate** a structured sidebar with parsed fields — nominal value, upper/lower tolerance, surface finish, datum references, and more
+4. **Export** a formatted Excel report (one row per balloon, all fields filled)
+5. **Let you edit** — click any balloon to edit its data, drag balloons and leader line endpoints to reposition, manually add/delete balloons
+
+**Performance:** < 1 second per page on digital CAD PDFs (AutoCAD, SolidWorks, CATIA, Creo). Scanned drawings fall back to a full-page OCR pipeline.
 
 ---
 
@@ -8,55 +28,48 @@
 
 ```mermaid
 graph TD
-    subgraph Browser["🌐 Browser — localhost:5173/5174"]
+    subgraph Browser["🌐 Browser — localhost:5173"]
         A1[Upload Screen<br/>drag & drop PDF]
         A2[Annotate Screen<br/>Drawing Canvas]
-        A3[Balloon List Sidebar<br/>inline editor]
+        A3[Balloon List Sidebar<br/>inline field editor]
         A1 -->|PDF selected| A2
         A2 <--> A3
     end
 
-    subgraph Backend["⚙️ Unified FastAPI Backend — localhost:8000"]
+    subgraph Backend["⚙️ FastAPI Backend — localhost:8000"]
         B1["POST /upload<br/>save PDF + detect"]
         B2["GET /document/:id/image/:page<br/>serve PNG renders"]
-        B3["POST /balloons<br/>manual add"]
-        B4["PUT /balloons/:id<br/>edit metadata"]
+        B3["POST /balloons — manual add"]
+        B4["PUT /balloons/:id — edit"]
         B5["DELETE /balloons/:id"]
-        B6["GET /export/:id<br/>download .xlsx"]
-        B7["POST /detect-existing-balloons<br/>YOLO / HoughCircles"]
+        B6["GET /export/:id — .xlsx"]
     end
 
-    subgraph Processing["🔬 Detection Pipeline (inside backend)"]
-        C1[pdf2image / Poppler<br/>PDF → PNG pages]
-        C2[OpenCV<br/>Canny + HoughLinesP<br/>structural features]
-        C3[Tesseract OCR<br/>PSM 11 sparse text<br/>upscaled + sharpened]
-        C4[detector.py<br/>token grouping<br/>classification<br/>deduplication]
-        C5[balloon_manager.py<br/>sequential numbering<br/>overlap repulsion]
+    subgraph Processing["🔬 Hybrid Detection Pipeline"]
+        C1[PyMuPDF<br/>PDF → PNG renders<br/>+ native vector text]
+        C2{Has native text?}
+        C3[detect_from_pdf_page<br/>vector text extraction<br/>instant · 100% accurate]
+        C4[detect_annotations<br/>OpenCV + Tesseract OCR<br/>for scanned drawings]
+        C5[detector.py<br/>classification · field parsing<br/>deduplication]
+        C6[balloon_manager.py<br/>sequential numbering<br/>overlap repulsion]
+        C1 --> C2
+        C2 -->|≥5 native words| C3
+        C2 -->|scanned| C4
+        C3 & C4 --> C5 --> C6
     end
 
     subgraph DB["🗄️ MongoDB — localhost:27017"]
-        D1[(documents collection)]
-        D2[(balloons collection)]
-    end
-
-    subgraph Export["📤 Export"]
-        E1[exporter.py<br/>openpyxl<br/>formatted .xlsx]
+        D1[(documents)]
+        D2[(balloons)]
     end
 
     A1 -->|multipart/form-data| B1
-    A2 -->|GET image| B2
-    A2 -->|POST| B3
-    A2 -->|PUT| B4
-    A2 -->|DELETE| B5
+    A2 --> B2 & B3 & B4 & B5
     A3 -->|GET export| B6
-
-    B1 --> C1 --> C2
-    C2 --> C3 --> C4 --> C5
-    C5 --> D2
+    B1 --> C1
+    C6 --> D2
     B1 --> D1
-
     B3 & B4 & B5 <--> D2
-    B6 --> E1
 ```
 
 ---
@@ -67,30 +80,30 @@ graph TD
 sequenceDiagram
     participant U as User (Browser)
     participant F as FastAPI /upload
-    participant P as pdf2image
-    participant CV as OpenCV
-    participant OCR as Tesseract
+    participant MU as PyMuPDF
     participant D as detector.py
     participant BM as balloon_manager.py
     participant MG as MongoDB
 
     U->>F: POST /upload (PDF file)
-    F->>P: convert_from_path(dpi=300)
-    P-->>F: List[PIL.Image] per page
+    F->>MU: open() + get_pixmap(300dpi) per page
+    MU-->>F: PNG renders + fitz_pages[]
 
     loop For each page
-        F->>CV: Canny edges + HoughLinesP
-        CV-->>F: structural lines[]
-        F->>OCR: image_to_data(processed, psm=11)
-        OCR-->>F: raw token dict
-        F->>D: detect_annotations(image)
-        D-->>F: classified annotations[]
+        F->>MU: page.get_text('words')
+        alt Digital CAD PDF (≥5 native words)
+            F->>D: detect_from_pdf_page(fitz_page)
+            Note over D: Reads exact vector text<br/>with pixel-accurate bounding boxes.<br/>No OCR — instant.
+        else Scanned drawing
+            F->>D: detect_annotations(img_bgr)
+            Note over D: Single Tesseract psm11 call.<br/>Filters by confidence + line proximity.
+        end
+        D-->>F: annotations[] with structured fields
         F->>BM: assign_balloon_numbers + spread_overlapping
         BM-->>F: balloon dicts[]
     end
 
-    F->>MG: insert_one(document)
-    F->>MG: insert_many(balloons)
+    F->>MG: insert document + balloons
     F-->>U: {document_id, page_count, page_width, page_height, balloons[]}
 ```
 
@@ -99,19 +112,19 @@ sequenceDiagram
 ## 📂 Project Structure
 
 ```
-CADProject-main/
+CADLens/
 │
-├── .gitignore                      # Root gitignore (node_modules, venv, uploads, exports, *.pt)
+├── .gitignore                      # Excludes node_modules, venv, uploads, exports, *.pt
 ├── README.md                       # This file
 │
 ├── backend/                        # Unified FastAPI Python service
-│   ├── main.py                     # App entry point — all HTTP routes
-│   ├── detector.py                 # OpenCV + Tesseract annotation pipeline
+│   ├── main.py                     # All HTTP routes + hybrid detection orchestration
+│   ├── detector.py                 # Hybrid pipeline: native PDF extraction + OCR fallback
 │   ├── balloon_manager.py          # Sequential numbering + overlap repulsion physics
 │   ├── exporter.py                 # openpyxl Excel generator (styled, auto-width columns)
 │   ├── database.py                 # Motor async MongoDB client
 │   ├── models.py                   # Pydantic request/response schemas
-│   ├── requirements.txt            # Python dependencies
+│   ├── requirements.txt            # Python dependencies (pinned)
 │   └── storage/
 │       ├── uploads/                # Saved PDFs + rendered page PNGs (git-ignored)
 │       └── exports/                # Generated .xlsx files (git-ignored)
@@ -120,50 +133,51 @@ CADProject-main/
 │   ├── index.html
 │   ├── vite.config.js
 │   ├── package.json
+│   ├── .env.example                # → copy to .env, set VITE_API_URL
 │   └── src/
 │       ├── main.jsx                # React entry point
+│       ├── api.js                  # Centralized API base URL (import.meta.env.VITE_API_URL)
 │       ├── App.jsx                 # Root state machine — upload → annotate views
 │       ├── App.css                 # Glassmorphism dark-mode design system
-│       ├── index.css               # Base reset
 │       └── components/
-│           ├── DrawingCanvas.jsx   # HTML5 Canvas overlay — balloons + leader lines
-│           ├── BalloonList.jsx     # Sidebar — per-type inline field editor
-│           └── Toolbar.jsx         # Zoom controls, mode toggle, export, new upload
+│           ├── DrawingCanvas.jsx   # Canvas overlay — balloons, leader lines, drag support
+│           ├── BalloonList.jsx     # Sidebar — per-type field editor, styled confirm dialog
+│           └── Toolbar.jsx         # Zoom, mode toggle, export, new upload
 │
-└── processing-service/             # Legacy standalone FastAPI (superseded by backend/)
-    ├── main.py
-    └── requirements.txt
+└── processing-service/             # Legacy standalone FastAPI (superseded, kept for reference)
 ```
 
 ---
 
-## ⚙️ Detection Pipeline Detail
+## ⚙️ Detection Pipeline
 
 ```mermaid
 flowchart LR
-    PDF[PDF File] --> CONV[pdf2image\ndpi=300]
-    CONV --> GRAY[Grayscale]
+    PDF[PDF File] --> MU[PyMuPDF\nrender 300 DPI]
+    MU --> CHK{Native words\n≥ 5?}
 
-    GRAY --> EDGES[Canny Edge Detection]
-    EDGES --> LINES[HoughLinesP\nDimension Lines]
-    GRAY --> CNTS[findContours\nStructural Shapes]
+    CHK -->|YES\ndigital CAD PDF| VEC[detect_from_pdf_page\npage.get_text words]
+    VEC --> EXCL1[Spatial Exclusion\n4% border + bottom 22%\ntitle block]
+    EXCL1 --> CLS1[Strict Classification\n_DIM_PATTERNS regex\nengineering only]
 
-    GRAY --> UP[Upscale 1.5×\nINTER_CUBIC]
-    UP --> SHARP[Laplacian Sharpen\nkernel filter2D]
+    CHK -->|NO\nscanned drawing| GR[Grayscale]
+    GR --> EDGES[Canny + HoughLinesP\ndimension lines]
+    GR --> UP[Upscale 1.5×\nINTER_CUBIC]
+    UP --> SHARP[Laplacian Sharpen]
     SHARP --> THRESH[adaptiveThreshold\nGaussian 31×31]
-    THRESH --> TESS[Tesseract OCR\nPSM 11 sparse]
+    THRESH --> TESS[Tesseract OCR\nPSM 11 — single call]
+    TESS --> FILT[Token Filtering\nconf ≥ 40 hard floor\nconf ≥ 50 or near dim-line]
+    FILT --> EXCL2[Spatial Exclusion\n4% border + bottom 22%]
+    EXCL2 --> GROUP[Token Grouping\nsame line · x-gap ≤ 25px]
+    GROUP --> CLS1
 
-    TESS --> FILT[Token Filtering\nconf ≥ 20 / 15 near lines]
-    FILT --> EXCL[Spatial Exclusion\nborder 3% + title block 15%]
-    EXCL --> GROUP[Token Grouping\nx-gap ≤ 20px same line]
-    GROUP --> CLASS[Classification\nDimension / Tolerance /\nSurface Finish / GD&T / Note]
-    CLASS --> DEDUP[Deduplication\nradius 25px]
-    DEDUP --> ASSIGN[Sequential Numbering]
+    CLS1 --> PARSE[_parse_annotation_fields\nnominal · tolerances\nsurface finish · datum]
+    PARSE --> DEDUP[Deduplication\nradius 30px]
+    DEDUP --> ASSIGN[Sequential Numbering\nmax balloon_no + 1]
     ASSIGN --> REPEL[Overlap Repulsion\nspring physics]
     REPEL --> MONGO[(MongoDB)]
 
-    LINES --> FILT
-    CNTS --> FILT
+    EDGES --> FILT
 ```
 
 ---
@@ -172,11 +186,13 @@ flowchart LR
 
 | Tool | Version | Install |
 |------|---------|---------|
-| Node.js | ≥ 18.0 | [nodejs.org](https://nodejs.org) |
+| Node.js | ≥ 18 | [nodejs.org](https://nodejs.org) |
 | Python | 3.9 – 3.11 | [python.org](https://python.org) |
 | MongoDB Community | ≥ 6.0 | `brew install mongodb-community` |
-| Tesseract OCR | any | `brew install tesseract` |
-| Poppler | any | `brew install poppler` |
+| Tesseract OCR | any | `brew install tesseract` *(only needed for scanned drawings)* |
+| PyMuPDF | 1.28.2 | installed via `pip install -r requirements.txt` |
+
+> **Note:** Poppler is no longer required — PDF rendering is done entirely by PyMuPDF.
 
 ---
 
@@ -198,20 +214,21 @@ pip install -r requirements.txt
 uvicorn main:app --port 8000 --reload
 ```
 
-Backend is live at → **http://localhost:8000**  
+Backend is live at → **http://localhost:8000**
 Interactive API docs → **http://localhost:8000/docs**
 
 ### Terminal 3 — React Frontend
 
 ```bash
 cd frontend
-npm install
+cp .env.example .env          # first time only
+npm install                   # first time only
 npm run dev
 ```
 
-Frontend is live at → **http://localhost:5173** *(or 5174 if 5173 is taken)*
+Frontend is live at → **http://localhost:5173**
 
-> **Note:** `pip install` and `npm install` are only needed the first time.
+> `pip install` and `npm install` are only needed the first time or after dependency changes.
 
 ---
 
@@ -219,61 +236,62 @@ Frontend is live at → **http://localhost:5173** *(or 5174 if 5173 is taken)*
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/upload` | Upload a PDF — runs full detection pipeline |
+| `POST` | `/upload` | Upload a PDF — runs full hybrid detection pipeline |
 | `GET` | `/document/{id}` | Fetch document metadata + all balloons |
 | `GET` | `/document/{id}/image/{page}` | Serve rendered PNG for a page |
-| `POST` | `/balloons` | Manually create a balloon |
-| `PUT` | `/balloons/{id}` | Update balloon metadata (text, tolerances, etc.) |
+| `POST` | `/balloons` | Manually create a balloon at a canvas position |
+| `PUT` | `/balloons/{id}` | Update balloon position, text, tolerances, etc. |
 | `DELETE` | `/balloons/{id}` | Delete a balloon |
 | `GET` | `/export/{id}` | Download annotated balloon table as `.xlsx` |
 | `POST` | `/detect-existing-balloons` | Re-run YOLO / HoughCircles on stored page images |
 
 ---
 
-## 🧠 Annotation Types
+## 🧠 Annotation Types & Classification
 
 | Type | Example text | Detection rule |
 |------|-------------|----------------|
-| **Dimension** | `39.5`, `Ø50`, `R12`, `H8` | Contains digit, Ø, R, H followed by number |
-| **Tolerance** | `±0.05`, `+0.039 / -0.000`, `0.150` | ± symbol, leading decimal, +/- pair |
+| **Dimension** | `39.5`, `Ø50`, `R12`, `M10x1.5`, `H8`, `45°` | Engineering prefix/suffix — Ø, R, M, H, °, mm, or decimal |
+| **Tolerance** | `±0.05`, `+0.039/-0.000`, `0.150` | ± symbol, leading decimal, +x/−y pair |
 | **Surface Finish** | `Ra 1.6`, `Rz 6.3` | Ra / Rz / Rq / Rt keyword |
-| **GD&T** | `⊙ 0.05 A`, `⊥ 0.1 A-B` | GD&T symbols or `0.xx LETTER` pattern |
-| **Note** | `62 Nos.`, `C45 Steel` | 3+ meaningful chars, no other match |
+| **GD&T** | `⊙ 0.05 A`, `⊥ 0.1 A-B` | GD&T Unicode symbols or `0.xx LETTER` pattern |
+| **Note** | `42CrMo4`, `62 Nos.` | 3+ meaningful chars not matching the above |
+
+**Deliberately rejected** (not ballooned):
+- Single letters (`A`, `B`, `C`) — section/datum markers
+- Single digits (`1`–`9`) — border grid references
+- Title block keywords (`DRAWN BY`, `MATERIAL`, `CUSTOMER`, `ALL DIMENSIONS`, …)
+- Section labels (`VIEW C`, `SECTION A-A`)
 
 ---
 
 ## 📤 Excel Export Format
 
-Each exported `.xlsx` contains one row per balloon with these columns:
+Each exported `.xlsx` contains one row per balloon with auto-populated columns:
 
 | Balloon No. | Drawing Ref | Type | Nominal Value | Upper Tol. | Lower Tol. | Surface Finish | Process | Datum Ref | Tol. Zone | Qty | Material | Description | Page No. | Remarks |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 
-- Blue header row (Calibri Bold)
+- Blue header row (Calibri Bold 11pt)
 - Alternating row shading
-- Auto-sized columns (capped at 50 chars)
+- Auto-sized columns (max 50 chars)
+- Fields auto-populated from detection — no manual entry required for standard dimensions
 
 ---
 
-## 🗂️ Git Setup
+## 🖱️ Using the Canvas
 
-```bash
-# 1. Initialise repo
-git init
-git add .
-git commit -m "feat: initial CADLens workspace"
-
-# 2. Push to GitHub
-git branch -M main
-git remote add origin https://github.com/YOUR_USERNAME/CADLens.git
-git push -u origin main
-```
-
-Files automatically excluded by `.gitignore`:
-- `node_modules/`, `venv/`, `__pycache__/`
-- `storage/uploads/` — uploaded PDFs
-- `storage/exports/` — generated Excel files
-- `*.pt`, `*.onnx` — YOLO model weights
-- `.env`, `.DS_Store`
+| Action | How |
+|--------|-----|
+| **Auto-detect** | Upload a PDF — balloons appear automatically |
+| **Select balloon** | Click any balloon circle or sidebar row |
+| **Edit fields** | Expand a balloon row → edit inline fields, press Enter or click away to save |
+| **Move balloon** | Click and drag any balloon circle |
+| **Move leader endpoint** | Select a balloon, then drag the yellow feature dot |
+| **Add balloon** | Switch to **Manual** mode (toolbar), click on the drawing |
+| **Delete balloon** | Click the trash icon → confirm in the styled dialog |
+| **Change type** | Expand balloon → change Type dropdown |
+| **Export** | Click **Export XLSX** in the toolbar |
 
 ---
 
@@ -281,9 +299,66 @@ Files automatically excluded by `.gitignore`:
 
 | Problem | Fix |
 |---------|-----|
-| **Upload failed** | Check that the backend is running on port 8000 and MongoDB is started |
-| **CORS error in browser** | Vite may have started on port 5174 instead of 5173 — both are allowed in `main.py` |
-| **PDF conversion failed** | Run `brew install poppler` and restart terminal |
-| **No balloons detected** | Ensure `brew install tesseract` succeeded and `tesseract --version` works |
+| **0 balloons detected** | Check backend logs — if `native PDF extraction` appears, the drawing has vector text. If `OCR fallback` appears, ensure `tesseract --version` works. |
+| **Upload failed / CORS error** | Ensure the backend is running on port 8000 and MongoDB is started |
+| **PDF conversion failed** | PyMuPDF handles this now — run `pip install PyMuPDF==1.28.2` |
 | **MongoDB connection refused** | Run `brew services start mongodb-community` |
-| **YOLO not loading** | `balloon_detector.pt` not found — system falls back to OpenCV HoughCircles automatically |
+| **YOLO not loading** | `balloon_detector.pt` not found — system auto-falls back to OpenCV HoughCircles |
+| **Balloons on wrong page area** | Check that `TITLE_BLOCK_FRAC` in `detector.py` matches your drawing's layout (default 78%) |
+| **Sidebar fields empty** | After re-uploading with the new code, fields auto-populate. Old documents in MongoDB predate structured parsing — delete and re-upload. |
+
+---
+
+## 🗂️ Git Setup
+
+```bash
+# Clone
+git clone https://github.com/vidhan13i/CADLens.git
+cd CADLens
+
+# Backend
+cd backend && pip install -r requirements.txt
+
+# Frontend
+cd ../frontend && cp .env.example .env && npm install
+```
+
+Files automatically excluded by `.gitignore`:
+- `node_modules/`, `venv/`, `__pycache__/`
+- `backend/storage/uploads/` — uploaded PDFs + rendered PNGs
+- `backend/storage/exports/` — generated Excel files
+- `*.pt`, `*.onnx` — YOLO model weights (download separately)
+- `.env` — local environment variables (copy from `.env.example`)
+- `.DS_Store`
+
+---
+
+## 📈 Changelog
+
+### v2.0 — Hybrid Detection Engine *(Oct 2026)*
+
+**Detection overhaul — 0 → 61 balloons on a real A3 engineering drawing:**
+
+- **Native PDF extraction** (`detect_from_pdf_page`) as primary path — reads exact vector text from digital CAD PDFs in < 1 second. No OCR errors, no confidence thresholds, no image processing overhead.
+- **Improved OCR fallback** for scanned drawings — single full-page Tesseract call (was: one call per contour, 500+ OS processes, 31 seconds per page).
+- **Strict classification** — `_DIM_PATTERNS` regex requires engineering prefixes (Ø, R, M, H, °, mm, decimal). Was: any text containing a single digit was classified as a Dimension.
+- **Title block exclusion** fixed — was disabled for landscape drawings (all CAD drawings are landscape). Now 78% cutoff for all orientations.
+- **Confidence thresholds** raised — hard floor 40 (was 15), pass threshold 50 (was 45). Eliminates OCR hallucinations on dimension lines and hatching.
+- **Structured field parsing** (`_parse_annotation_fields`) — `nominal_value`, `tolerance_upper`, `tolerance_lower`, `surface_finish`, `datum_ref`, `tolerance_zone`, `quantity`, `material` are now auto-populated in MongoDB, the sidebar editor, and Excel export.
+
+**Bug fixes:**
+- `import pymupdf` replaces deprecated `import fitz`
+- RGBA 4-channel PDF renders no longer crash `cv2.COLOR_BGR2GRAY`
+- YOLO balloon coordinates were scaled to a 1000px thumbnail — now use native image coordinates
+- Manual balloon add used `count+1` (collides after delete) — now uses `max(balloon_no)+1`
+- Sidebar `DetailField` showed stale data when switching between balloons — `useEffect` sync added
+
+**Frontend:**
+- Balloon drag & drop — move the balloon body or the leader line endpoint
+- Styled in-app confirmation dialog replaces blocking `window.confirm()`
+- Centralized API URL in `src/api.js` (was hardcoded in 4 separate files)
+- `frontend/.env.example` template added for new contributors
+
+---
+
+*Built with FastAPI · PyMuPDF · OpenCV · Tesseract · React · MongoDB · openpyxl*
