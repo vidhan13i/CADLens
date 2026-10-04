@@ -4,27 +4,23 @@ uvicorn[standard]==0.34.3
 python-multipart==0.0.20       # multipart/form-data file uploads
 
 # ── Database ───────────────────────────────────────────────────────────────────
-motor==3.7.1                   # async MongoDB driver (wraps pymongo)
+motor==3.7.1                   # async MongoDB driver
 pymongo==4.12.1                # required by motor + bson.ObjectId
 
 # ── Data validation ────────────────────────────────────────────────────────────
 pydantic==2.11.5
 
 # ── Computer Vision + OCR ──────────────────────────────────────────────────────
-opencv-python==4.11.0.86       # cv2 – HoughCircles, HoughLinesP, findContours
+opencv-python==4.11.0.86       # cv2
 numpy==2.2.6
 pytesseract==0.3.13            # thin wrapper around system tesseract binary
-Pillow==11.2.1                 # PIL – image I/O (also needed by pdf2image)
+Pillow==11.2.1                 # PIL – image I/O
 
 # ── PDF handling ───────────────────────────────────────────────────────────────
-pdf2image==1.17.0              # requires system poppler (brew install poppler)
+PyMuPDF==1.28.2                # P3 fix: pinned version, was unlisted/uninstalled
 
 # ── Excel export ───────────────────────────────────────────────────────────────
 openpyxl==3.1.5
 
-# ── YOLO (optional – remove if not using a trained model) ─────────────────────
+# ── YOLO (optional – system falls back to OpenCV if model file absent) ─────────
 ultralytics==8.3.154
-
-# requirements.txt
-
-PyMuPDF          # ← This provides the 'fitz' module

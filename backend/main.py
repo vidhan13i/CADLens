@@ -18,13 +18,13 @@ from bson import ObjectId
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-import fitz
+import pymupdf as fitz  # P2 fix: 'fitz' API deprecated
 from PIL import Image
 from pydantic import BaseModel
 
 from database import balloons_collection, documents_collection
 from balloon_manager import assign_balloon_numbers, spread_overlapping_balloons
-from detector import detect_annotations
+from detector import detect_annotations, detect_from_pdf_page  # P10 fix: native PDF path
 from exporter import export_to_excel
 from models import BalloonCreate, BalloonUpdate
 
@@ -107,7 +107,10 @@ def _process_with_yolo(images):
     results = []
     for page_idx, page in enumerate(images):
         img = np.array(page)
-        if img.ndim == 3 and img.shape[2] == 3:
+        # P13 fix: handle RGBA (4-channel) images from PyMuPDF
+        if img.ndim == 3 and img.shape[2] == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+        elif img.ndim == 3 and img.shape[2] == 3:
             img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
@@ -164,11 +167,11 @@ def _process_with_yolo(images):
                             best_conf, best_text = c_, t.upper()
 
                 if best_text:
-                    scale = 1000.0 / img.shape[1]
+                    # P11 fix: use native image coords (was wrongly scaled to 1000px)
                     detections.append({
                         "box":            (ix1, iy1, ix2, iy2),
-                        "x":              int((ix1 + w / 2) * scale),
-                        "y":              int((iy1 + h / 2) * scale),
+                        "x":              int(ix1 + w / 2),
+                        "y":              int(iy1 + h / 2),
                         "text":           best_text,
                         "type":           "balloon",
                         "confidence":     round(conf * 100, 1),
@@ -199,8 +202,10 @@ def _process_with_opencv(images):
     for page_idx, page in enumerate(images):
         img = np.array(page)
 
-        # ✅ Fixed: shape[2] not shape[4]
-        if img.ndim == 3 and img.shape[2] == 3:
+        # P13 fix: handle RGBA (4-channel) PDF renders
+        if img.ndim == 3 and img.shape[2] == 4:
+            img = cv2.cvtColor(img, cv2.COLOR_RGBA2BGR)
+        elif img.ndim == 3 and img.shape[2] == 3:
             img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -299,10 +304,11 @@ async def upload_pdf(file: UploadFile = File(...)):
     content = await file.read()
     pdf_path.write_bytes(content)
 
-    # Convert PDF → PIL images using PyMuPDF
+    # Convert PDF → PIL images using PyMuPDF and keep fitz pages for native extraction
     try:
         fitz_doc = fitz.open(str(pdf_path))
         images = []
+        fitz_pages = []          # P10 fix: keep pages for native text extraction
         zoom = 300 / 72          # 300 DPI
         matrix = fitz.Matrix(zoom, zoom)
 
@@ -313,6 +319,7 @@ async def upload_pdf(file: UploadFile = File(...)):
             img_path = UPLOAD_DIR / f"{doc_id}_page_{page_no}.png"
             pix.save(str(img_path))
             images.append(Image.open(str(img_path)))
+            fitz_pages.append(fitz_page)  # store for native extraction
 
     except Exception as e:
         raise HTTPException(
@@ -325,23 +332,28 @@ async def upload_pdf(file: UploadFile = File(...)):
     all_balloons = []
     balloon_counter = 1
 
-    for page_no, pil_img in enumerate(images, start=1):
+    for page_no, (pil_img, fitz_page) in enumerate(zip(images, fitz_pages), start=1):
 
-        # Convert PIL → BGR numpy array for OpenCV / detector
-        img_np = np.array(pil_img)
-        if img_np.ndim == 3 and img_np.shape[2] == 3:
-            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-        elif img_np.ndim == 3 and img_np.shape[2] == 4:
-            # RGBA → BGR
-            img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR)
+        # P10 fix: try native vector text extraction first
+        native_words = fitz_page.get_text('words')
+        meaningful = [w for w in native_words if w[4].strip()]
+
+        if len(meaningful) >= 5:
+            logger.info("Page %d: native PDF extraction (%d words).", page_no, len(meaningful))
+            detections = detect_from_pdf_page(fitz_page, dpi_scale=300.0 / 72.0)
         else:
-            img_bgr = img_np
+            logger.info("Page %d: OCR fallback (%d native words found).", page_no, len(meaningful))
+            # P13 fix: handle RGBA (4-channel) images
+            img_np = np.array(pil_img)
+            if img_np.ndim == 3 and img_np.shape[2] == 4:
+                img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGBA2BGR)
+            elif img_np.ndim == 3 and img_np.shape[2] == 3:
+                img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+            else:
+                img_bgr = img_np
+            detections = detect_annotations(img_bgr)
 
-        # Run annotation detector (always returns a list, never None)
-        detections = detect_annotations(img_bgr)
-
-        logger.info(
-            "Page %d: %d annotation(s) detected.", page_no, len(detections))
+        logger.info("Page %d: %d annotation(s) detected.", page_no, len(detections))
 
         # Assign sequential balloon numbers and spread overlaps
         page_balloons = assign_balloon_numbers(
@@ -411,9 +423,15 @@ async def get_page_image(document_id: str, page_no: int):
 # ── POST /balloons ────────────────────────────────────────────────────────────
 @app.post("/balloons")
 async def create_balloon(payload: BalloonCreate):
-    count = await balloons_collection.count_documents(
-        {"document_id": payload.document_id})
-    new_no = count + 1
+    # P12 fix: use max(balloon_no)+1 instead of count+1 to avoid
+    # duplicate numbers after a delete operation.
+    pipeline = [
+        {"$match":  {"document_id": payload.document_id}},
+        {"$group":  {"_id": None, "max_no": {"$max": "$balloon_no"}}},
+    ]
+    cursor = balloons_collection.aggregate(pipeline)
+    result = await cursor.to_list(length=1)
+    new_no = (result[0]["max_no"] + 1) if result else 1
 
     balloon = {
         "_id":        ObjectId(),

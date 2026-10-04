@@ -10,10 +10,14 @@ build/
 # Uploaded files and user storage
 storage/uploads/*
 !storage/uploads/.gitkeep
+backend/storage/uploads/*
+!backend/storage/uploads/.gitkeep
 
 # Exported Excel files (generated at runtime)
 storage/exports/*
 !storage/exports/.gitkeep
+backend/storage/exports/*
+!backend/storage/exports/.gitkeep
 
 # Python environment and cache
 __pycache__/

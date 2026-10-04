@@ -1,7 +1,8 @@
 import axios from 'axios';
 import { Upload, Download, Cpu, PencilLine, RefreshCw } from 'lucide-react';
 
-const API = 'http://localhost:8000';
+import { API } from '../api';
+
 
 export default function Toolbar({ documentId, mode, setMode, zoom, setZoom, onNewUpload }) {
   const handleExport = async () => {

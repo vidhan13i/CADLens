@@ -33,8 +33,18 @@ def assign_balloon_numbers(
             "feature_x": float(det.get("feature_x", det.get("x", 0.0))),
             "feature_y": float(det.get("feature_y", det.get("y", 0.0))),
             "page": int(page),
-            "description": "",
-            "remarks": "",
+            # P8 fix: pass through structured fields parsed by detector
+            "nominal_value":   str(det.get("nominal_value",   "")),
+            "tolerance_upper": str(det.get("tolerance_upper", "")),
+            "tolerance_lower": str(det.get("tolerance_lower", "")),
+            "surface_finish":  str(det.get("surface_finish",  "")),
+            "process":         str(det.get("process",         "")),
+            "datum_ref":       str(det.get("datum_ref",       "")),
+            "tolerance_zone":  str(det.get("tolerance_zone",  "")),
+            "quantity":        str(det.get("quantity",        "")),
+            "material":        str(det.get("material",        "")),
+            "description":     str(det.get("description",     "")),
+            "remarks":         str(det.get("remarks",         "")),
         }
         balloons.append(balloon)
     return balloons

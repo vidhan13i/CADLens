@@ -599,3 +599,85 @@ input[type="file"] { display: none; }
   box-shadow: 0 0 0 2px rgba(59,130,246,0.2);
 }
 .type-select option { background: #1e293b; color: var(--text-main); }
+
+/* ══ P19: Canvas drag cursor utilities ══════════════════════════════════════ */
+.cursor-crosshair { cursor: crosshair; }
+.cursor-pointer   { cursor: pointer; }
+
+/* ══ P22: Confirm delete dialog ════════════════════════════════════════════ */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 0.15s ease;
+}
+
+.confirm-dialog {
+  width: 340px;
+  padding: 28px 24px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+  animation: slideUp 0.18s ease;
+}
+
+.confirm-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(239, 68, 68, 0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.confirm-title {
+  font-weight: 600;
+  font-size: 1rem;
+  color: var(--text-main);
+  margin: 0;
+}
+
+.confirm-body {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+  width: 100%;
+  justify-content: center;
+}
+
+.btn-danger {
+  background: var(--danger);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 7px 20px;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+.btn-danger:hover {
+  background: var(--danger-hover);
+  transform: translateY(-1px);
+}
+.btn-danger:active { transform: translateY(0); }
+
+@keyframes slideUp {
+  from { transform: translateY(16px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}

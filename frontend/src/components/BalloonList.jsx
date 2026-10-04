@@ -1,8 +1,7 @@
-import { useState, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Trash2, ChevronDown, ChevronUp } from 'lucide-react';
-
-const API = 'http://localhost:8000';
+import { Trash2, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
+import { API } from '../api';  // P17 fix: centralized URL
 
 const TYPE_COLORS = {
   Dimension:       '#3b82f6',
@@ -61,6 +60,11 @@ const ALL_TYPES = ['Dimension', 'Tolerance', 'Surface Finish', 'GD&T', 'Note'];
 function DetailField({ label, value, placeholder, onSave }) {
   const [draft, setDraft] = useState(value || '');
   const [active, setActive] = useState(false);
+
+  // P21 fix: sync draft when the parent balloon changes (different balloon selected)
+  useEffect(() => {
+    if (!active) setDraft(value || '');
+  }, [value, active]);
 
   const commit = () => {
     setActive(false);
@@ -130,13 +134,52 @@ function DetailPanel({ balloon, onUpdate }) {
       {/* Type-specific fields */}
       {fields.map(f => (
         <DetailField
-          key={f.key}
+          key={`${balloon.id}-${f.key}`}
           label={f.label}
           value={balloon[f.key] || ''}
           placeholder={f.placeholder}
           onSave={v => save(f.key, v)}
         />
       ))}
+    </div>
+  );
+}
+
+// ── P22: Styled in-app confirmation dialog (replaces window.confirm) ───────────
+function ConfirmDialog({ balloon, onConfirm, onCancel }) {
+  if (!balloon) return null;
+  return (
+    <div className="confirm-overlay" onClick={onCancel}>
+      <div
+        className="confirm-dialog glass-panel"
+        onClick={e => e.stopPropagation()}
+        id="confirm-delete-dialog"
+      >
+        <div className="confirm-icon">
+          <AlertTriangle size={24} color="#ef4444" />
+        </div>
+        <p className="confirm-title">Delete Balloon #{balloon.balloon_no}?</p>
+        <p className="confirm-body">
+          This will permanently remove annotation&nbsp;
+          <strong>"{balloon.text}"</strong> from this drawing.
+        </p>
+        <div className="confirm-actions">
+          <button
+            id="confirm-delete-cancel"
+            className="btn-secondary"
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          <button
+            id="confirm-delete-ok"
+            className="btn-danger"
+            onClick={onConfirm}
+          >
+            Delete
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -150,6 +193,7 @@ export default function BalloonList({
   onDelete,
 }) {
   const [expandedId, setExpandedId] = useState(null);
+  const [confirmBalloon, setConfirmBalloon] = useState(null); // P22: stores balloon pending delete
 
   const toggleExpand = (id) => {
     setExpandedId(prev => (prev === id ? null : id));
@@ -160,8 +204,15 @@ export default function BalloonList({
     toggleExpand(id);
   };
 
-  const handleDelete = async (balloon) => {
-    if (!window.confirm(`Delete balloon #${balloon.balloon_no}?`)) return;
+  // P22 fix: show styled dialog instead of window.confirm
+  const handleDeleteClick = (e, balloon) => {
+    e.stopPropagation();
+    setConfirmBalloon(balloon);
+  };
+
+  const confirmDelete = async () => {
+    const balloon = confirmBalloon;
+    setConfirmBalloon(null);
     try {
       await axios.delete(`${API}/balloons/${balloon.id}`);
       onDelete(balloon.id);
@@ -176,6 +227,13 @@ export default function BalloonList({
 
   return (
     <aside className="balloon-sidebar glass-panel">
+      {/* P22: styled confirm dialog */}
+      <ConfirmDialog
+        balloon={confirmBalloon}
+        onConfirm={confirmDelete}
+        onCancel={() => setConfirmBalloon(null)}
+      />
+
       <div className="sidebar-header">
         <h2 className="sidebar-title">Annotations</h2>
         <span className="balloon-count">{balloons.length} items</span>
@@ -220,7 +278,7 @@ export default function BalloonList({
                     <button
                       id={`delete-balloon-${b.id}`}
                       className="delete-btn"
-                      onClick={e => { e.stopPropagation(); handleDelete(b); }}
+                      onClick={e => handleDeleteClick(e, b)}
                       title="Delete"
                     >
                       <Trash2 size={13} />

@@ -6,7 +6,8 @@ import DrawingCanvas from './components/DrawingCanvas';
 import BalloonList from './components/BalloonList';
 import './App.css';
 
-const API = 'http://localhost:8000';
+import { API } from './api';
+
 
 export default function App() {
   const [view, setView] = useState('upload'); // 'upload' | 'annotate'
@@ -152,6 +153,7 @@ export default function App() {
             mode={mode}
             zoom={zoom}
             onBalloonAdded={addBalloon}
+            onBalloonMoved={updateBalloon}
           />
           {pageCount > 1 && (
             <div className="page-nav">
