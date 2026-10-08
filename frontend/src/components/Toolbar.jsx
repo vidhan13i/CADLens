@@ -1,24 +1,40 @@
+import { useState } from 'react';
 import axios from 'axios';
-import { Upload, Download, Cpu, PencilLine, RefreshCw } from 'lucide-react';
+import { Upload, Download, Cpu, PencilLine, Loader2 } from 'lucide-react';
 
 import { API } from '../api';
 
 
 export default function Toolbar({ documentId, mode, setMode, zoom, setZoom, onNewUpload }) {
+  const [exporting, setExporting] = useState(false);
+
   const handleExport = async () => {
-    if (!documentId) return;
+    if (!documentId || exporting) return;
+    setExporting(true);
     try {
       const response = await axios.get(`${API}/export/${documentId}`, {
         responseType: 'blob',
       });
-      const url = URL.createObjectURL(response.data);
+      const blob = new Blob([response.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
+      a.style.display = 'none';
       a.href = url;
       a.download = `balloons_${documentId}.xlsx`;
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
-    } catch {
-      alert('Export failed — make sure the document has balloons.');
+      setTimeout(() => {
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+      }, 1500);
+    } catch (err) {
+      console.warn('Axios blob export failed, falling back to direct download link...', err);
+      // Fallback: direct browser navigation to download attachment
+      window.location.href = `${API}/export/${documentId}`;
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -76,11 +92,20 @@ export default function Toolbar({ documentId, mode, setMode, zoom, setZoom, onNe
           id="btn-export"
           className="toolbar-btn btn-success"
           onClick={handleExport}
-          disabled={!documentId}
+          disabled={!documentId || exporting}
           title="Export balloon table to Excel"
         >
-          <Download size={16} />
-          Export Excel
+          {exporting ? (
+            <>
+              <Loader2 size={16} className="spin" />
+              Exporting...
+            </>
+          ) : (
+            <>
+              <Download size={16} />
+              Export Excel
+            </>
+          )}
         </button>
 
         <button

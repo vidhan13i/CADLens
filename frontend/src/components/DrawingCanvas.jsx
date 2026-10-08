@@ -59,50 +59,64 @@ export default function DrawingCanvas({
       if (dist > BALLOON_R + 2) {
         const startX = cx + (dx / dist) * BALLOON_R;
         const startY = cy + (dy / dist) * BALLOON_R;
+        
+        ctx.save();
         ctx.beginPath();
         ctx.moveTo(startX, startY);
         ctx.lineTo(fx, fy);
-        ctx.strokeStyle = isSelected ? '#facc15' : 'rgba(239,68,68,0.9)';
-        ctx.lineWidth = isSelected ? 2 : 1.5;
+        ctx.strokeStyle = isSelected ? '#3b82f6' : '#ef4444';
+        ctx.lineWidth = isSelected ? 2.5 : 1.8;
         ctx.stroke();
 
         // Arrowhead at feature point
         const angle = Math.atan2(dy, dx);
         ctx.beginPath();
         ctx.moveTo(fx, fy);
-        ctx.lineTo(fx - 8 * Math.cos(angle - Math.PI / 6), fy - 8 * Math.sin(angle - Math.PI / 6));
-        ctx.lineTo(fx - 8 * Math.cos(angle + Math.PI / 6), fy - 8 * Math.sin(angle + Math.PI / 6));
+        ctx.lineTo(fx - 9 * Math.cos(angle - Math.PI / 6), fy - 9 * Math.sin(angle - Math.PI / 6));
+        ctx.lineTo(fx - 9 * Math.cos(angle + Math.PI / 6), fy - 9 * Math.sin(angle + Math.PI / 6));
         ctx.closePath();
-        ctx.fillStyle = isSelected ? '#facc15' : 'rgba(239,68,68,0.9)';
+        ctx.fillStyle = isSelected ? '#3b82f6' : '#ef4444';
         ctx.fill();
+        ctx.restore();
       }
 
-      // Circle
+      // Circle with subtle shadow for crisp visibility
+      ctx.save();
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.45)';
+      ctx.shadowBlur = 6;
+      ctx.shadowOffsetY = 2;
+
       ctx.beginPath();
       ctx.arc(cx, cy, BALLOON_R, 0, Math.PI * 2);
-      ctx.fillStyle = isSelected ? '#facc15' : 'rgba(255, 68, 68, 0.92)';
+      ctx.fillStyle = isSelected ? '#2563eb' : '#ef4444';
       ctx.fill();
-      ctx.strokeStyle = isSelected ? '#fff' : 'rgba(255,255,255,0.85)';
-      ctx.lineWidth = isSelected ? 2.5 : 1.5;
+
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
+      ctx.shadowOffsetY = 0;
+
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = isSelected ? 2.5 : 1.8;
       ctx.stroke();
 
       // Number label
-      ctx.fillStyle = '#fff';
-      ctx.font = `bold ${BALLOON_R * 0.95}px Inter, sans-serif`;
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '700 11px Inter, -apple-system, sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(String(b.balloon_no), cx, cy);
 
-      // P19: feature point handle — small circle, only when selected
+      // Feature point handle — only when selected
       if (isSelected && dist > BALLOON_R + 2) {
         ctx.beginPath();
-        ctx.arc(fx, fy, 5, 0, Math.PI * 2);
-        ctx.fillStyle = '#facc15';
+        ctx.arc(fx, fy, 4.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#3b82f6';
         ctx.fill();
-        ctx.strokeStyle = '#fff';
+        ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 1.5;
         ctx.stroke();
       }
+      ctx.restore();
     });
   }, [balloons, selectedBalloonId, zoom, canvasW, canvasH, pageWidth, pageHeight]);
 

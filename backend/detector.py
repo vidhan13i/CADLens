@@ -372,13 +372,17 @@ def detect_from_pdf_page(
         cx_img = round(cx_pt * dpi_scale, 1)
         cy_img = round(cy_pt * dpi_scale, 1)
 
+        # Offset balloon circle by 60px up-right so it does not obscure the dimension text
+        bx_img = round(cx_img + 60.0, 1)
+        by_img = round(cy_img - 60.0, 1)
+
         fields = _parse_annotation_fields(line_text, ann_type)
 
         annotations.append({
             'text':      line_text,
             'type':      ann_type,
-            'x':         cx_img,
-            'y':         cy_img,
+            'x':         bx_img,
+            'y':         by_img,
             'feature_x': cx_img,
             'feature_y': cy_img,
             **fields,
@@ -647,12 +651,13 @@ def _detect_ocr_impl(image: np.ndarray) -> List[Dict[str, Any]]:
         ann_type = _classify_text_strict(clean_text, require_engineering=True)
         if ann_type is None:
             continue
-        fields = _parse_annotation_fields(clean_text, ann_type)
+        bx = round(float(g['feat_x']) + 60.0, 1)
+        by = round(float(g['feat_y']) - 60.0, 1)
         classified.append({
             'text':      clean_text,
             'type':      ann_type,
-            'x':         round(float(g['x']), 1),
-            'y':         round(float(g['cy']), 1),
+            'x':         bx,
+            'y':         by,
             'feature_x': round(float(g['feat_x']), 1),
             'feature_y': round(float(g['feat_y']), 1),
             **fields,
