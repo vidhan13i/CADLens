@@ -193,7 +193,18 @@ export default function BalloonList({
   onDelete,
 }) {
   const [expandedId, setExpandedId] = useState(null);
-  const [confirmBalloon, setConfirmBalloon] = useState(null); // P22: stores balloon pending delete
+  const [confirmBalloon, setConfirmBalloon] = useState(null);
+
+  // Auto-expand and scroll-to when selection changes (e.g. user clicked on canvas)
+  useEffect(() => {
+    if (!selectedBalloonId) return;
+    setExpandedId(selectedBalloonId);
+    // Scroll the card into view
+    const card = document.getElementById(`balloon-row-${selectedBalloonId}`);
+    if (card) {
+      card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [selectedBalloonId]);
 
   const toggleExpand = (id) => {
     setExpandedId(prev => (prev === id ? null : id));

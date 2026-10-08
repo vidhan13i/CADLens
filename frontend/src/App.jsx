@@ -154,6 +154,7 @@ export default function App() {
             zoom={zoom}
             onBalloonAdded={addBalloon}
             onBalloonMoved={updateBalloon}
+            onBalloonClick={(id) => setSelectedBalloonId(id)}
           />
           {pageCount > 1 && (
             <div className="page-nav">

@@ -63,6 +63,9 @@ _ENGLISH_WORDS = re.compile(
 _PUNCT_ONLY  = re.compile(r'^[\W_]+$')
 _CLEAN_PREFIX = re.compile(r'^[_\-\.\|\\\/\s]+')
 
+# MacRoman / Windows-1252 degree-symbol variants that CAD fonts sometimes embed
+_DEGREE_FIXUP = re.compile(r'[\x83\xb0\u00b0]')
+
 # Strict engineering dimension patterns (P4 fix — replaces loose [\d])
 _DIM_PATTERNS = re.compile(
     r'[Øøø∅]\s*\d'           # Diameter:  Ø50, ø12
@@ -70,17 +73,21 @@ _DIM_PATTERNS = re.compile(
     r'|[Mm]\d+\s*[xX×]'      # Thread:    M10x1.5, M6x1
     r'|[Hh]\d'                # Fit:       H8, h7
     r'|\d+\.\d+'              # Decimal:   39.5, 0.150  (clearly dimensional)
-    r'|\d+\s*°'               # Angle:     45°, 30°
+    r'|\d+\s*[°\x83]'        # Angle:     45°, 30° (incl. MacRoman \x83)
     r'|\d+\s*mm'              # With unit: 50mm, 100mm
     r'|\d+\s*[Ii][Nn][Cc][Hh]' # With unit: 2inch
     r'|±\s*\d'                # Symmetric tolerance: ±0.05
     r'|\+\s*\d[\d\.]*\s*[/\\]\s*-\s*\d'  # Bilateral: +0.039/-0.000
     r'|[Dd][Ii][Aa]\.?\s*\d'  # Dia prefix: Dia 50, DIA50
+    r'|\d+\s*[xX]\s*\d+\s*[°\x83]'  # Chamfer: 1x45°
 )
 
 _SURFACE_FINISH = re.compile(r'\b(?:Ra|Rz|Rt|Rq)\b', re.IGNORECASE)
 _GDNT_SYMBOLS   = re.compile(r'[⊙⊖⊕⊗⌀○△□◇⊥∥∠⌖]')
 _GDNT_PATTERN   = re.compile(r'^\s*0\.\d+\s+[A-Z]\s*$')
+
+# ISO fit code pattern: e.g. H8, h7, g6, H12
+_FIT_CODE = re.compile(r'([HhKkNnPpFfEeGg])(\d{1,2})$')
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -105,7 +112,8 @@ def _parse_annotation_fields(text: str, ann_type: str) -> Dict[str, str]:
         'description':     '',
         'remarks':         '',
     }
-    t = text.strip()
+    # Normalise degree symbols before parsing
+    t = _DEGREE_FIXUP.sub('°', text.strip())
 
     if ann_type == 'Surface Finish':
         m = re.search(r'(Ra|Rz|Rt|Rq)\s*(\d+\.?\d*)', t, re.IGNORECASE)
@@ -143,30 +151,59 @@ def _parse_annotation_fields(text: str, ann_type: str) -> Dict[str, str]:
         return fields
 
     if ann_type == 'Dimension':
+        # Chamfer:  1x45°
+        m_cha = re.search(r'(\d+)\s*[xX]\s*(\d+)\s*°', t)
+        if m_cha:
+            fields['nominal_value'] = f'{m_cha.group(1)}x{m_cha.group(2)}°'
+            fields['process']       = 'CHAMFER'
+            return fields
+
         # Diameter: Ø50, ø50, Dia 50, DIA50mm
         m_dia = re.search(r'(?:[Øøø∅]|[Dd][Ii][Aa]\.?)\s*(\d+\.?\d*)', t)
         if m_dia:
             fields['nominal_value'] = m_dia.group(1)
-            return fields
+            # Still parse tolerance / fit if present on same line
+
         # Radius: R6, r3.5
-        m_rad = re.search(r'[Rr]\s*(\d+\.?\d*)', t)
+        m_rad = re.search(r'^[Rr]\s*(\d+\.?\d*)', t) if not m_dia else None
         if m_rad:
             fields['nominal_value'] = m_rad.group(1)
-            return fields
-        # Thread: M10x1.5
-        m_thr = re.search(r'[Mm](\d+)\s*[xX×]\s*(\d+\.?\d*)', t)
-        if m_thr:
-            fields['nominal_value'] = f'M{m_thr.group(1)}x{m_thr.group(2)}'
-            return fields
-        # Fit code: 50H8
-        m_fit = re.search(r'(\d+\.?\d*)\s*([HhKkNnPpFfEeGg]\d+)', t)
+
+        # Thread: M10x1.5 (only if no dia/radius yet)
+        m_thr = None
+        if not m_dia and not m_rad:
+            m_thr = re.search(r'[Mm](\d+)\s*[xX×]\s*(\d+\.?\d*)', t)
+            if m_thr:
+                fields['nominal_value'] = f'M{m_thr.group(1)}x{m_thr.group(2)}'
+
+        # Fit code with nominal:  39H8,  10 H12,  30 H11
+        m_fit = re.search(r'(\d+\.?\d*)\s*([HhGgKkNnPpFfEe]\d{1,2})', t)
         if m_fit:
-            fields['nominal_value'] = m_fit.group(1)
-            return fields
-        # Decimal or plain number + optional unit
-        m_num = re.search(r'(\d+\.?\d*)\s*(?:mm|°)?', t)
-        if m_num:
-            fields['nominal_value'] = m_num.group(1)
+            if not fields['nominal_value']:
+                fields['nominal_value'] = m_fit.group(1)
+            # Record ISO fit code in tolerance_zone
+            fields['tolerance_zone'] = m_fit.group(2).upper()
+
+        # If we still have no nominal, extract first number
+        if not fields['nominal_value']:
+            m_num = re.search(r'(\d+\.?\d*)', t)
+            if m_num:
+                fields['nominal_value'] = m_num.group(1)
+
+        # Bilateral tolerance on same line: (- 0.000 / + 0.039) or similar
+        m_bi = re.search(
+            r'\+\s*(\d+\.?\d*)\s*(?:[/\\-]|$).*?-\s*(\d+\.?\d*)'
+            r'|\([-−]\s*(\d+\.?\d*)\).*?\(\+\s*(\d+\.?\d*)\)',
+            t,
+        )
+        if m_bi:
+            if m_bi.group(1):
+                fields['tolerance_upper'] = f'+{m_bi.group(1)}'
+                fields['tolerance_lower'] = f'-{m_bi.group(2)}'
+            else:
+                fields['tolerance_upper'] = f'+{m_bi.group(4)}'
+                fields['tolerance_lower'] = f'-{m_bi.group(3)}'
+
         return fields
 
     if ann_type == 'Note':
@@ -331,64 +368,183 @@ def detect_from_pdf_page(
     # words → (x0, y0, x1, y1, text, block_no, line_no, word_no)
     raw_words = page.get_text('words')
 
-    # Group words into lines using (block_no, line_no)
-    line_map: Dict[Tuple, List] = {}
+    # ── Group words by BLOCK first, then merge stacked tolerance lines (D1 fix) ──
+    # In CAD PDFs a dimension callout like:
+    #   Line 0:  39  H8   (stacked upper line)
+    #   Line 1:  (+0.039)
+    #   Line 2:  (-0.000)
+    # all live in the SAME block. We merge the whole block into one text so
+    # the field parser can see both the nominal value and the tolerances.
+    block_map: Dict[int, List] = {}
     for w in raw_words:
-        key = (int(w[5]), int(w[6]))
-        line_map.setdefault(key, []).append(w)
+        block_map.setdefault(int(w[5]), []).append(w)
 
     annotations: List[Dict] = []
 
-    for _key, words in line_map.items():
-        words_s = sorted(words, key=lambda w: w[0])  # sort by x0
+    # Track which block+line combos we have already emitted as a merged block
+    # to avoid double-counting when a block contains a standalone valid line.
+    emitted_blocks: set = set()
 
-        lx0 = min(w[0] for w in words_s)
-        ly0 = min(w[1] for w in words_s)
-        lx1 = max(w[2] for w in words_s)
-        ly1 = max(w[3] for w in words_s)
+    for blk_id, blk_words in block_map.items():
+        blk_words_s = sorted(blk_words, key=lambda w: (round(w[1] / 6) * 6, w[0]))
+        blk_text = ' '.join(w[4] for w in blk_words_s).strip()
+        blk_text = _DEGREE_FIXUP.sub('°', blk_text)
+        blk_text = _CLEAN_PREFIX.sub('', blk_text).strip()
 
-        cx_pt = (lx0 + lx1) / 2.0
-        cy_pt = (ly0 + ly1) / 2.0
+        # Bounding box of the whole block
+        bx0 = min(w[0] for w in blk_words_s)
+        by0 = min(w[1] for w in blk_words_s)
+        bx1 = max(w[2] for w in blk_words_s)
+        by1 = max(w[3] for w in blk_words_s)
+        cx_blk = (bx0 + bx1) / 2.0
+        cy_blk = (by0 + by1) / 2.0
 
-        # Spatial exclusion (in PDF points)
-        if cx_pt < x_min or cx_pt > x_max:
+        # Spatial exclusion
+        if cx_blk < x_min or cx_blk > x_max:
             continue
-        if cy_pt < y_min or cy_pt > y_max:
-            continue
-
-        line_text = ' '.join(w[4] for w in words_s).strip()
-        if not line_text:
-            continue
-
-        line_text = _CLEAN_PREFIX.sub('', line_text).strip()
-        if not line_text:
-            continue
-
-        # Native PDF path: allow standalone integers (they're in drawing zone)
-        ann_type = _classify_text_strict(line_text, require_engineering=False)
-        if ann_type is None:
+        if cy_blk < y_min or cy_blk > y_max:
             continue
 
-        cx_img = round(cx_pt * dpi_scale, 1)
-        cy_img = round(cy_pt * dpi_scale, 1)
+        # If the merged block text classifies as a dimension/note with tolerances
+        # embedded, emit it as a single merged balloon.
+        if blk_text and _has_tolerance_stack(blk_words_s):
+            ann_type = _classify_text_strict(blk_text, require_engineering=False) or 'Dimension'
+            cx_img = round(cx_blk * dpi_scale, 1)
+            cy_img = round(cy_blk * dpi_scale, 1)
+            bx_img = round(cx_img + 60.0, 1)
+            by_img = round(cy_img - 60.0, 1)
+            fields = _parse_annotation_fields(blk_text, ann_type)
+            # Try to extract tolerances from individual stacked lines
+            upper, lower = _extract_stacked_tolerances(blk_words_s)
+            if upper:
+                fields['tolerance_upper'] = upper
+            if lower:
+                fields['tolerance_lower'] = lower
+            annotations.append({
+                'text':      blk_text,
+                'type':      ann_type,
+                'x':         bx_img,
+                'y':         by_img,
+                'feature_x': cx_img,
+                'feature_y': cy_img,
+                **fields,
+            })
+            emitted_blocks.add(blk_id)
+            continue
 
-        # Offset balloon circle by 60px up-right so it does not obscure the dimension text
-        bx_img = round(cx_img + 60.0, 1)
-        by_img = round(cy_img - 60.0, 1)
+        # Standard path: process each line within the block separately
+        line_map: Dict[Tuple, List] = {}
+        for w in blk_words:
+            key = (int(w[5]), int(w[6]))
+            line_map.setdefault(key, []).append(w)
 
-        fields = _parse_annotation_fields(line_text, ann_type)
+        for _key, words in line_map.items():
+            words_s = sorted(words, key=lambda w: w[0])
 
-        annotations.append({
-            'text':      line_text,
-            'type':      ann_type,
-            'x':         bx_img,
-            'y':         by_img,
-            'feature_x': cx_img,
-            'feature_y': cy_img,
-            **fields,
-        })
+            lx0 = min(w[0] for w in words_s)
+            ly0 = min(w[1] for w in words_s)
+            lx1 = max(w[2] for w in words_s)
+            ly1 = max(w[3] for w in words_s)
+
+            cx_pt = (lx0 + lx1) / 2.0
+            cy_pt = (ly0 + ly1) / 2.0
+
+            # Spatial exclusion (in PDF points)
+            if cx_pt < x_min or cx_pt > x_max:
+                continue
+            if cy_pt < y_min or cy_pt > y_max:
+                continue
+
+            line_text = ' '.join(w[4] for w in words_s).strip()
+            if not line_text:
+                continue
+
+            line_text = _DEGREE_FIXUP.sub('°', line_text)
+            line_text = _CLEAN_PREFIX.sub('', line_text).strip()
+            if not line_text:
+                continue
+
+            ann_type = _classify_text_strict(line_text, require_engineering=False)
+            if ann_type is None:
+                continue
+
+            cx_img = round(cx_pt * dpi_scale, 1)
+            cy_img = round(cy_pt * dpi_scale, 1)
+            bx_img = round(cx_img + 60.0, 1)
+            by_img = round(cy_img - 60.0, 1)
+
+            fields = _parse_annotation_fields(line_text, ann_type)
+
+            annotations.append({
+                'text':      line_text,
+                'type':      ann_type,
+                'x':         bx_img,
+                'y':         by_img,
+                'feature_x': cx_img,
+                'feature_y': cy_img,
+                **fields,
+            })
 
     return _deduplicate(annotations, radius=DEDUP_RADIUS * dpi_scale)
+
+
+def _has_tolerance_stack(words: List) -> bool:
+    """Return True if words span >1 line AND any word looks like a tolerance value."""
+    lines = {int(w[6]) for w in words}
+    if len(lines) < 2:
+        return False
+    tol_re = re.compile(r'^[\+\-±]?\d+\.\d+$')
+    return any(tol_re.match(w[4].strip()) for w in words)
+
+
+def _extract_stacked_tolerances(words: List) -> Tuple[str, str]:
+    """
+    For a block with stacked tolerance lines, extract upper/lower tolerance values.
+
+    CAD convention for bilateral tolerance callout:
+        Row A (y≈96.6):  (- )          ← bracket opening/closing
+        Row B (y≈98.2):  + 0.039       ← upper deviation (+ sign + value, same y row)
+        Row C (y≈104):   39  H8        ← nominal dimension
+        Row D (y≈109.9): 0.000         ← lower deviation (plain decimal, no sign)
+
+    Returns (upper, lower) strings e.g. ('+0.039', '-0.000').
+    """
+    # Cluster words into visual rows by y-centre proximity (≤4 pt apart = same row)
+    y_rows: List[Tuple[float, List]] = []  # (row_y, [words])
+    for w in sorted(words, key=lambda w: w[1]):
+        wcy = (w[1] + w[3]) / 2.0
+        placed = False
+        for row in y_rows:
+            if abs(wcy - row[0]) <= 4.0:
+                row[1].append(w)
+                placed = True
+                break
+        if not placed:
+            y_rows.append((wcy, [w]))
+
+    # Build per-row strings
+    row_strs: List[Tuple[float, str]] = []
+    for row_y, rwords in sorted(y_rows, key=lambda r: r[0]):
+        rwords_s = sorted(rwords, key=lambda w: w[0])
+        row_str  = ' '.join(w[4] for w in rwords_s).strip()
+        row_strs.append((row_y, row_str))
+
+    upper = ''
+    lower = ''
+
+    for row_y, row_str in row_strs:
+        # Row containing explicit + sign and a decimal → upper deviation
+        m_plus = re.search(r'\+\s*(\d+\.\d+)', row_str)
+        if m_plus and not upper:
+            upper = f'+{m_plus.group(1)}'
+            continue
+        # Row with just a plain decimal (no sign) after upper is found → lower deviation
+        m_plain = re.search(r'^\s*(\d+\.\d+)\s*$', row_str)
+        if m_plain and upper and not lower:
+            lower = f'-{m_plain.group(1)}'
+            continue
+
+    return (upper, lower)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
