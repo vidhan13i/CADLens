@@ -284,10 +284,11 @@ Each exported `.xlsx` contains one row per balloon with auto-populated columns:
 | Action | How |
 |--------|-----|
 | **Auto-detect** | Upload a PDF — balloons appear automatically |
-| **Select balloon** | Click any balloon circle or sidebar row |
+| **Inspect Balloon** | Click any balloon circle on canvas → automatically highlights, scrolls, and expands its details in the sidebar |
+| **Select Row** | Click any sidebar row → highlights the corresponding balloon on the canvas |
 | **Edit fields** | Expand a balloon row → edit inline fields, press Enter or click away to save |
-| **Move balloon** | Click and drag any balloon circle |
-| **Move leader endpoint** | Select a balloon, then drag the yellow feature dot |
+| **Move balloon** | Click and drag any balloon circle — leader line remains pinned to the measured CAD feature |
+| **Move leader endpoint** | Select a balloon, then drag the yellow feature dot to point to a new CAD feature |
 | **Add balloon** | Switch to **Manual** mode (toolbar), click on the drawing |
 | **Delete balloon** | Click the trash icon → confirm in the styled dialog |
 | **Change type** | Expand balloon → change Type dropdown |
@@ -335,6 +336,20 @@ Files automatically excluded by `.gitignore`:
 
 ## 📈 Changelog
 
+### v2.1 — Interactive Ballooning & CAD Precision Tolerancing *(Latest)*
+
+| Feature / Area | Before (Previous Implementation) | Updated Code | How It Is Improved |
+| :--- | :--- | :--- | :--- |
+| **Interactive Canvas Click** | Clicking a balloon on the canvas had no inspector response; user had to hunt through the sidebar. | Added two-way sync: `onBalloonClick` triggers `selectedBalloonId`, auto-expands row and smooth-scrolls into view. | Instantly view and inspect any balloon's full 11-field data sheet with a single click on the drawing. |
+| **Balloon Drag & Leader Line** | Dragging a balloon moved both the badge `(x, y)` and the feature point `(feature_x, feature_y)`, detaching from the target. | Leader line anchor `(feature_x, feature_y)` stays firmly pinned to the CAD feature when moving the badge. | Keeps the pointer anchored to the exact dimension while freely decluttering badge positions. |
+| **Canvas Drag State Management** | `mouseup` listener was attached only to `<canvas>`; dragging outside canvas caused balloons to stick to cursor. | Moved mouse listeners to window level with proper cleanup on unmount. | Smooth drag-and-drop experience that never gets stuck, even on rapid mouse movements. |
+| **Stacked Bilateral Tolerances** | Multi-line stacked tolerances (e.g. `+0.039` over `0.000`) were split into separate fragments or dropped signs. | Implemented Y-proximity clustering in `_extract_stacked_tolerances` to correctly associate upper and lower limits. | Accurately extracts upper (`+0.039`) and lower (`+0.000`) tolerances into distinct fields for FAI compliance. |
+| **Chamfer & Degree Symbol Parsing** | MacRoman/Windows-1252 degree symbol `\x83` (`ƒ`) was unhandled; chamfers like `1x45°` were marked as "Notes" with empty nominals. | Added `_DEGREE_FIXUP` dictionary and normalization in `detector.py`. | Chamfers like `1x45°` are correctly classified as **Dimension**, nominal: `1x45°`, process: `CHAMFER`. |
+| **ISO Fit Classification** | Early returns in `_parse_annotation_fields` bypassed ISO fits (`H8`, `H11`, `H12`) or lumped them into nominal text. | Extracted ISO fits into dedicated `tolerance_zone` attribute and prevented premature exit in the parser. | Fit grades are cleanly categorized and exported to the dedicated Tolerance Zone column in Excel. |
+| **Inspection Data Export** | Missing tolerance bounds and fit classifications in exported reports. | Full export integration for nominal values, upper/lower tolerances, ISO fits, and machining processes. | Produces professional, audit-ready Excel reports for Quality Control and First Article Inspection. |
+
+---
+
 ### v2.0 — Hybrid Detection Engine *(Oct 2026)*
 
 **Detection overhaul — 0 → 61 balloons on a real A3 engineering drawing:**
@@ -362,3 +377,4 @@ Files automatically excluded by `.gitignore`:
 ---
 
 *Built with FastAPI · PyMuPDF · OpenCV · Tesseract · React · MongoDB · openpyxl*
+
