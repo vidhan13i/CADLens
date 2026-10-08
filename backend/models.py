@@ -29,6 +29,7 @@ class Balloon(BaseModel):
 
     # ── Dimension-specific ────────────────────────────────────────────────────
     nominal_value:   Optional[str] = ""   # e.g. "39", "100"
+    units:           Optional[str] = ""   # e.g. "mm", "°", "in"
     tolerance_upper: Optional[str] = ""   # e.g. "+0.039"
     tolerance_lower: Optional[str] = ""   # e.g. "-0.000"
     surface_finish:  Optional[str] = ""   # e.g. "Ra 1.6"
@@ -52,6 +53,7 @@ class BalloonCreate(BaseModel):
     page: int
     text: str
     type: str
+    units: Optional[str] = "mm"
 
 
 class BalloonUpdate(BaseModel):
@@ -65,6 +67,7 @@ class BalloonUpdate(BaseModel):
 
     # Dimension
     nominal_value:   Optional[str] = None
+    units:           Optional[str] = None
     tolerance_upper: Optional[str] = None
     tolerance_lower: Optional[str] = None
     surface_finish:  Optional[str] = None

@@ -85,6 +85,19 @@ def _serialize_doc(doc: dict) -> dict:
 
 def _serialize_balloon(b: dict) -> dict:
     b["id"] = _oid(b.pop("_id"))
+    if not b.get("units"):
+        b_type = b.get("type", "")
+        b_text = str(b.get("text", ""))
+        if b_type == "Dimension":
+            b["units"] = "°" if "°" in b_text else "mm"
+        elif b_type == "Surface Finish":
+            b["units"] = "µm"
+        elif b_type == "Tolerance":
+            b["units"] = "°" if "°" in b_text else "mm"
+        elif b_type == "GD&T":
+            b["units"] = "mm"
+        else:
+            b["units"] = ""
     return b
 
 
@@ -444,6 +457,7 @@ async def create_balloon(payload: BalloonCreate):
         "feature_x":  payload.feature_x,
         "feature_y":  payload.feature_y,
         "page":       payload.page,
+        "units":      payload.units or ("mm" if payload.type == "Dimension" else ""),
         "description": "",
         "remarks":    "",
     }

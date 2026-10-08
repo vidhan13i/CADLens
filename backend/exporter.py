@@ -11,6 +11,7 @@ HEADERS = [
     "Drawing Reference / Text",
     "Type",
     "Nominal Value",
+    "Units",
     "Upper Tolerance",
     "Lower Tolerance",
     "Surface Finish",
@@ -65,11 +66,16 @@ def export_to_excel(balloons: List[Dict[str, Any]], output_path: str) -> str:
     sorted_balloons = sorted(balloons, key=lambda b: (b.get("page", 1), b.get("balloon_no", 0)))
 
     for row_idx, balloon in enumerate(sorted_balloons, start=2):
+        unit = balloon.get("units", "")
+        if not unit and balloon.get("type") == "Dimension":
+            unit = "°" if "°" in str(balloon.get("text", "")) else "mm"
+
         row_data = [
             balloon.get("balloon_no", ""),
             balloon.get("text", ""),
             balloon.get("type", ""),
             balloon.get("nominal_value", ""),
+            unit,
             balloon.get("tolerance_upper", ""),
             balloon.get("tolerance_lower", ""),
             balloon.get("surface_finish", ""),

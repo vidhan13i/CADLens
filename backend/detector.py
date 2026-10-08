@@ -101,6 +101,7 @@ def _parse_annotation_fields(text: str, ann_type: str) -> Dict[str, str]:
     """
     fields: Dict[str, str] = {
         'nominal_value':   '',
+        'units':           '',
         'tolerance_upper': '',
         'tolerance_lower': '',
         'surface_finish':  '',
@@ -116,6 +117,7 @@ def _parse_annotation_fields(text: str, ann_type: str) -> Dict[str, str]:
     t = _DEGREE_FIXUP.sub('°', text.strip())
 
     if ann_type == 'Surface Finish':
+        fields['units'] = 'µm'
         m = re.search(r'(Ra|Rz|Rt|Rq)\s*(\d+\.?\d*)', t, re.IGNORECASE)
         if m:
             fields['surface_finish'] = f'{m.group(1).upper()} {m.group(2)}'
@@ -123,6 +125,7 @@ def _parse_annotation_fields(text: str, ann_type: str) -> Dict[str, str]:
         return fields
 
     if ann_type == 'GD&T':
+        fields['units'] = 'mm'
         # e.g. "⊥ 0.05 A-B" or "0.05 A"
         m = re.search(r'(\d+\.?\d+)\s+([A-Z](?:-[A-Z])*)', t)
         if m:
@@ -131,6 +134,7 @@ def _parse_annotation_fields(text: str, ann_type: str) -> Dict[str, str]:
         return fields
 
     if ann_type == 'Tolerance':
+        fields['units'] = '°' if '°' in t else 'mm'
         # Bilateral: +0.039 / -0.000
         m_bi = re.search(r'\+\s*(\d+\.?\d*)\s*[/\\]\s*-?\s*(\d+\.?\d*)', t)
         if m_bi:
@@ -151,11 +155,13 @@ def _parse_annotation_fields(text: str, ann_type: str) -> Dict[str, str]:
         return fields
 
     if ann_type == 'Dimension':
+        fields['units'] = '°' if '°' in t else 'mm'
         # Chamfer:  1x45°
         m_cha = re.search(r'(\d+)\s*[xX]\s*(\d+)\s*°', t)
         if m_cha:
             fields['nominal_value'] = f'{m_cha.group(1)}x{m_cha.group(2)}°'
             fields['process']       = 'CHAMFER'
+            fields['units']         = '°'
             return fields
 
         # Diameter: Ø50, ø50, Dia 50, DIA50mm

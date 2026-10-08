@@ -16,6 +16,7 @@ const TYPE_COLORS = {
 const TYPE_FIELDS = {
   Dimension: [
     { key: 'nominal_value',   label: 'Nominal Value',   placeholder: 'e.g. 39, 100' },
+    { key: 'units',           label: 'Units',           placeholder: 'e.g. mm, °, in' },
     { key: 'tolerance_upper', label: 'Upper Tolerance',  placeholder: 'e.g. +0.039' },
     { key: 'tolerance_lower', label: 'Lower Tolerance',  placeholder: 'e.g. -0.000' },
     { key: 'surface_finish',  label: 'Surface Finish',   placeholder: 'e.g. Ra 1.6' },
@@ -25,6 +26,7 @@ const TYPE_FIELDS = {
   ],
   Tolerance: [
     { key: 'nominal_value',   label: 'Nominal Value',   placeholder: 'e.g. 0.150' },
+    { key: 'units',           label: 'Units',           placeholder: 'e.g. mm, °' },
     { key: 'tolerance_upper', label: 'Upper Tolerance',  placeholder: 'e.g. +0.050' },
     { key: 'tolerance_lower', label: 'Lower Tolerance',  placeholder: 'e.g. -0.050' },
     { key: 'description',     label: 'Applies To',       placeholder: 'Feature this tolerance applies to' },
@@ -32,6 +34,7 @@ const TYPE_FIELDS = {
   ],
   'Surface Finish': [
     { key: 'nominal_value',   label: 'Ra / Rz Value',   placeholder: 'e.g. 1.6, 6.3' },
+    { key: 'units',           label: 'Units',           placeholder: 'e.g. µm' },
     { key: 'process',         label: 'Process',          placeholder: 'e.g. Grinding, Milling' },
     { key: 'description',     label: 'Surface Area',     placeholder: 'Which surface' },
     { key: 'remarks',         label: 'Remarks',          placeholder: 'Additional notes' },
@@ -39,6 +42,7 @@ const TYPE_FIELDS = {
   'GD&T': [
     { key: 'tolerance_zone',  label: 'Tolerance Zone',  placeholder: 'e.g. 0.05, Ø0.1' },
     { key: 'datum_ref',       label: 'Datum Reference',  placeholder: 'e.g. A, A-B' },
+    { key: 'units',           label: 'Units',           placeholder: 'e.g. mm' },
     { key: 'description',     label: 'Feature',          placeholder: 'Controlled feature' },
     { key: 'remarks',         label: 'Remarks',          placeholder: 'Additional notes' },
   ],
@@ -106,6 +110,19 @@ function TypeSelect({ value, onSave }) {
 function DetailPanel({ balloon, onUpdate }) {
   const fields = TYPE_FIELDS[balloon.type] || TYPE_FIELDS['Note'];
 
+  const getFieldValue = (key) => {
+    if (balloon[key] !== undefined && balloon[key] !== null && balloon[key] !== '') {
+      return balloon[key];
+    }
+    if (key === 'units') {
+      if (balloon.type === 'Dimension') return balloon.text?.includes('°') ? '°' : 'mm';
+      if (balloon.type === 'Tolerance') return balloon.text?.includes('°') ? '°' : 'mm';
+      if (balloon.type === 'Surface Finish') return 'µm';
+      if (balloon.type === 'GD&T') return 'mm';
+    }
+    return '';
+  };
+
   const save = async (field, value) => {
     try {
       const { data } = await axios.put(`${API}/balloons/${balloon.id}`, { [field]: value });
@@ -136,7 +153,7 @@ function DetailPanel({ balloon, onUpdate }) {
         <DetailField
           key={`${balloon.id}-${f.key}`}
           label={f.label}
-          value={balloon[f.key] || ''}
+          value={getFieldValue(f.key)}
           placeholder={f.placeholder}
           onSave={v => save(f.key, v)}
         />
@@ -276,7 +293,25 @@ export default function BalloonList({
                   </span>
 
                   <div className="summary-info">
-                    <span className="summary-text" title={b.text}>{b.text}</span>
+                    <span className="summary-text" title={b.text}>
+                      {b.text}
+                      {b.nominal_value && (
+                        <span
+                          className="summary-units-tag"
+                          style={{
+                            marginLeft: '6px',
+                            fontSize: '11px',
+                            color: '#94a3b8',
+                            background: 'rgba(255, 255, 255, 0.08)',
+                            padding: '1px 5px',
+                            borderRadius: '4px',
+                            fontWeight: 500,
+                          }}
+                        >
+                          {b.nominal_value} {b.units || (b.text?.includes('°') ? '°' : (b.type === 'Surface Finish' ? 'µm' : 'mm'))}
+                        </span>
+                      )}
+                    </span>
                     <span
                       className="type-chip"
                       style={{ background: TYPE_COLORS[b.type] || '#6b7280' }}
