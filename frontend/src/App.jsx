@@ -20,8 +20,11 @@ export default function App() {
   const [currentPage, setCurrentPage] = useState(1);
   const [balloons, setBalloons] = useState([]);
   const [selectedBalloonId, setSelectedBalloonId] = useState(null);
+  const [selectedForExport, setSelectedForExport] = useState(new Set());
+  const [exporting, setExporting] = useState(false);
   const [mode, setMode] = useState('auto'); // 'auto' | 'manual'
   const [zoom, setZoom] = useState(1.0); // 1.0 = 100%, 1.5 = 150%, etc.
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [error, setError] = useState(null);
 
   const handleUpload = useCallback(async (file) => {
@@ -42,6 +45,7 @@ export default function App() {
       setPageWidth(data.page_width);
       setPageHeight(data.page_height);
       setBalloons(data.balloons);
+      setSelectedForExport(new Set());
       setCurrentPage(1);
       setView('annotate');
     } catch (err) {
@@ -67,8 +71,90 @@ export default function App() {
   const addBalloon = (b) => setBalloons((prev) => [...prev, b]);
   const updateBalloon = (updated) =>
     setBalloons((prev) => prev.map((b) => (b.id === updated.id ? updated : b)));
-  const removeBalloon = (id) =>
+  const removeBalloon = (id) => {
     setBalloons((prev) => prev.filter((b) => b.id !== id));
+    setSelectedForExport((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  };
+
+  const toggleSelectForExport = useCallback((id) => {
+    setSelectedForExport((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const selectAllForExport = useCallback(() => {
+    // Select all balloons on the current page
+    setSelectedForExport((prev) => {
+      const next = new Set(prev);
+      balloons.filter((b) => b.page === currentPage).forEach((b) => next.add(b.id));
+      return next;
+    });
+  }, [balloons, currentPage]);
+
+  const deselectAllForExport = useCallback(() => {
+    setSelectedForExport(new Set());
+  }, []);
+
+  // Shared Excel Export Handler (All vs Selected)
+  const handleExport = useCallback(async (isManualSelected = false) => {
+    if (!documentId || exporting) return;
+    const ids = isManualSelected ? Array.from(selectedForExport) : [];
+    if (isManualSelected && ids.length === 0) {
+      alert('Please select at least one balloon using the checkboxes in the sidebar.');
+      return;
+    }
+
+    setExporting(true);
+    try {
+      let response;
+      if (isManualSelected) {
+        response = await axios.post(`${API}/export/${documentId}/selected`, {
+          balloon_ids: ids,
+        }, {
+          responseType: 'blob',
+        });
+      } else {
+        response = await axios.get(`${API}/export/${documentId}`, {
+          responseType: 'blob',
+        });
+      }
+
+      const filename = isManualSelected
+        ? `balloons_${documentId}_selected.xlsx`
+        : `balloons_${documentId}.xlsx`;
+
+      const blob = new Blob([response.data], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.style.display = 'none';
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+      }, 1500);
+    } catch (err) {
+      console.warn('Axios blob export failed, falling back to direct navigation...', err);
+      if (isManualSelected) {
+        window.location.href = `${API}/export/${documentId}?balloon_ids=${ids.join(',')}`;
+      } else {
+        window.location.href = `${API}/export/${documentId}`;
+      }
+    } finally {
+      setExporting(false);
+    }
+  }, [documentId, exporting, selectedForExport]);
 
   if (view === 'upload') {
     return (
@@ -137,9 +223,21 @@ export default function App() {
         setMode={setMode}
         zoom={zoom}
         setZoom={setZoom}
-        onNewUpload={() => { setView('upload'); setDocumentId(null); setBalloons([]); }}
+        onNewUpload={() => {
+          setView('upload');
+          setDocumentId(null);
+          setBalloons([]);
+          setSelectedForExport(new Set());
+        }}
+        onExportAll={() => handleExport(false)}
+        onExportSelected={() => handleExport(true)}
+        selectedCount={selectedForExport.size}
+        totalCount={balloons.length}
+        exporting={exporting}
+        sidebarOpen={sidebarOpen}
+        onToggleSidebar={() => setSidebarOpen((prev) => !prev)}
       />
-      <div className="annotate-body">
+      <div className={`annotate-body ${!sidebarOpen ? 'sidebar-collapsed' : ''}`}>
         <div className="canvas-area">
           <DrawingCanvas
             documentId={documentId}
@@ -150,6 +248,8 @@ export default function App() {
             balloons={pageBalloons}
             selectedBalloonId={selectedBalloonId}
             setSelectedBalloonId={setSelectedBalloonId}
+            selectedForExport={selectedForExport}
+            toggleSelectForExport={toggleSelectForExport}
             mode={mode}
             zoom={zoom}
             onBalloonAdded={addBalloon}
@@ -178,13 +278,21 @@ export default function App() {
             </div>
           )}
         </div>
-        <BalloonList
-          balloons={pageBalloons}
-          selectedBalloonId={selectedBalloonId}
-          setSelectedBalloonId={setSelectedBalloonId}
-          onUpdate={updateBalloon}
-          onDelete={removeBalloon}
-        />
+        {sidebarOpen && (
+          <BalloonList
+            balloons={pageBalloons}
+            selectedBalloonId={selectedBalloonId}
+            setSelectedBalloonId={setSelectedBalloonId}
+            selectedForExport={selectedForExport}
+            toggleSelectForExport={toggleSelectForExport}
+            selectAllForExport={selectAllForExport}
+            deselectAllForExport={deselectAllForExport}
+            onExportSelected={() => handleExport(true)}
+            onUpdate={updateBalloon}
+            onDelete={removeBalloon}
+            onClose={() => setSidebarOpen(false)}
+          />
+        )}
       </div>
     </div>
   );

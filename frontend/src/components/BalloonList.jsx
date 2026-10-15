@@ -1,64 +1,100 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Trash2, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
+import { Trash2, ChevronDown, ChevronUp, AlertTriangle, Download, CheckSquare, X } from 'lucide-react';
 import { API } from '../api';  // P17 fix: centralized URL
 
 const TYPE_COLORS = {
-  Dimension:       '#3b82f6',
-  Tolerance:       '#f59e0b',
-  'Surface Finish':'#10b981',
-  'GD&T':          '#8b5cf6',
-  Note:            '#6b7280',
-  balloon:         '#ef4444',
+  Dimension:        '#3b82f6',
+  Linear:           '#3b82f6',
+  Diameter:         '#06b6d4',
+  Radius:           '#14b8a6',
+  Chamfer:          '#8b5cf6',
+  Thread:           '#ec4899',
+  Angle:            '#f97316',
+  Tolerance:        '#f59e0b',
+  'Surface Finish': '#10b981',
+  'GD&T':           '#6366f1',
+  Note:             '#6b7280',
+  balloon:          '#ef4444',
 };
+
+const DIMENSION_FIELDS = [
+  { key: 'nominal_value',   label: 'Nominal Value',      placeholder: 'e.g. 39, 1845' },
+  { key: 'units',           label: 'Units',              placeholder: 'e.g. mm, °, in' },
+  { key: 'tolerance_upper', label: 'Upper Tolerance',     placeholder: 'e.g. +0.039' },
+  { key: 'tolerance_lower', label: 'Lower Tolerance',     placeholder: 'e.g. -0.000' },
+  { key: 'upper_limit',     label: 'Upper Limit (Max)',  placeholder: 'e.g. 39.039' },
+  { key: 'lower_limit',     label: 'Lower Limit (Min)',  placeholder: 'e.g. 39.000' },
+  { key: 'quantity',        label: 'Quantity / Count',   placeholder: 'e.g. 4X, 2X' },
+  { key: 'char_designator', label: 'Classification',     placeholder: 'Standard, Critical, Reference, Basic' },
+  { key: 'inspection_tool', label: 'Inspection Tool',    placeholder: 'e.g. Caliper, Micrometer, CMM' },
+  { key: 'surface_finish',  label: 'Surface Finish',      placeholder: 'e.g. Ra 1.6' },
+  { key: 'process',         label: 'Process / Feature',  placeholder: 'e.g. Drilling, Turning' },
+  { key: 'description',     label: 'Description',         placeholder: 'Feature description' },
+  { key: 'remarks',         label: 'Remarks',             placeholder: 'Additional notes' },
+];
 
 // Fields shown per annotation type in the expanded detail panel
 const TYPE_FIELDS = {
-  Dimension: [
-    { key: 'nominal_value',   label: 'Nominal Value',   placeholder: 'e.g. 39, 100' },
-    { key: 'units',           label: 'Units',           placeholder: 'e.g. mm, °, in' },
-    { key: 'tolerance_upper', label: 'Upper Tolerance',  placeholder: 'e.g. +0.039' },
-    { key: 'tolerance_lower', label: 'Lower Tolerance',  placeholder: 'e.g. -0.000' },
-    { key: 'surface_finish',  label: 'Surface Finish',   placeholder: 'e.g. Ra 1.6' },
-    { key: 'process',         label: 'Process',          placeholder: 'e.g. Drilling, Turning' },
-    { key: 'description',     label: 'Description',      placeholder: 'Feature description' },
-    { key: 'remarks',         label: 'Remarks',          placeholder: 'Additional notes' },
-  ],
+  Dimension:        DIMENSION_FIELDS,
+  Linear:           DIMENSION_FIELDS,
+  Diameter:         DIMENSION_FIELDS,
+  Radius:           DIMENSION_FIELDS,
+  Chamfer:          DIMENSION_FIELDS,
+  Thread:           DIMENSION_FIELDS,
+  Angle:            DIMENSION_FIELDS,
   Tolerance: [
-    { key: 'nominal_value',   label: 'Nominal Value',   placeholder: 'e.g. 0.150' },
-    { key: 'units',           label: 'Units',           placeholder: 'e.g. mm, °' },
-    { key: 'tolerance_upper', label: 'Upper Tolerance',  placeholder: 'e.g. +0.050' },
-    { key: 'tolerance_lower', label: 'Lower Tolerance',  placeholder: 'e.g. -0.050' },
-    { key: 'description',     label: 'Applies To',       placeholder: 'Feature this tolerance applies to' },
-    { key: 'remarks',         label: 'Remarks',          placeholder: 'Additional notes' },
+    { key: 'nominal_value',   label: 'Nominal Value',     placeholder: 'e.g. 0.150' },
+    { key: 'units',           label: 'Units',             placeholder: 'e.g. mm, °' },
+    { key: 'tolerance_upper', label: 'Upper Tolerance',    placeholder: 'e.g. +0.050' },
+    { key: 'tolerance_lower', label: 'Lower Tolerance',    placeholder: 'e.g. -0.050' },
+    { key: 'upper_limit',     label: 'Upper Limit (Max)', placeholder: 'e.g. 0.200' },
+    { key: 'lower_limit',     label: 'Lower Limit (Min)', placeholder: 'e.g. 0.100' },
+    { key: 'char_designator', label: 'Classification',   placeholder: 'Critical, Major, Standard' },
+    { key: 'inspection_tool', label: 'Inspection Tool',  placeholder: 'e.g. Micrometer, Height Gauge' },
+    { key: 'description',     label: 'Applies To',         placeholder: 'Feature this tolerance applies to' },
+    { key: 'remarks',         label: 'Remarks',            placeholder: 'Additional notes' },
   ],
   'Surface Finish': [
-    { key: 'nominal_value',   label: 'Ra / Rz Value',   placeholder: 'e.g. 1.6, 6.3' },
-    { key: 'units',           label: 'Units',           placeholder: 'e.g. µm' },
-    { key: 'process',         label: 'Process',          placeholder: 'e.g. Grinding, Milling' },
-    { key: 'description',     label: 'Surface Area',     placeholder: 'Which surface' },
-    { key: 'remarks',         label: 'Remarks',          placeholder: 'Additional notes' },
+    { key: 'nominal_value',   label: 'Ra / Rz Value',     placeholder: 'e.g. 1.6, 6.3' },
+    { key: 'units',           label: 'Units',             placeholder: 'e.g. µm' },
+    { key: 'process',         label: 'Process',            placeholder: 'e.g. Grinding, Milling' },
+    { key: 'inspection_tool', label: 'Inspection Tool',   placeholder: 'Profilometer / Roughness Tester' },
+    { key: 'description',     label: 'Surface Area',       placeholder: 'Which surface' },
+    { key: 'remarks',         label: 'Remarks',            placeholder: 'Additional notes' },
   ],
   'GD&T': [
-    { key: 'tolerance_zone',  label: 'Tolerance Zone',  placeholder: 'e.g. 0.05, Ø0.1' },
-    { key: 'datum_ref',       label: 'Datum Reference',  placeholder: 'e.g. A, A-B' },
-    { key: 'units',           label: 'Units',           placeholder: 'e.g. mm' },
-    { key: 'description',     label: 'Feature',          placeholder: 'Controlled feature' },
-    { key: 'remarks',         label: 'Remarks',          placeholder: 'Additional notes' },
+    { key: 'tolerance_zone',  label: 'Tolerance Zone',    placeholder: 'e.g. 0.05, Ø0.1' },
+    { key: 'datum_ref',       label: 'Datum Reference',    placeholder: 'e.g. A, A-B' },
+    { key: 'units',           label: 'Units',             placeholder: 'e.g. mm' },
+    { key: 'inspection_tool', label: 'Inspection Tool',   placeholder: 'CMM / Dial Indicator' },
+    { key: 'description',     label: 'Feature',            placeholder: 'Controlled feature' },
+    { key: 'remarks',         label: 'Remarks',            placeholder: 'Additional notes' },
   ],
   Note: [
-    { key: 'quantity',    label: 'Quantity',     placeholder: 'e.g. 62 Nos.' },
-    { key: 'material',    label: 'Material',     placeholder: 'e.g. C45 Steel' },
-    { key: 'description', label: 'Description',  placeholder: 'Expanded note text' },
-    { key: 'remarks',     label: 'Remarks',      placeholder: 'Additional notes' },
+    { key: 'quantity',        label: 'Quantity',          placeholder: 'e.g. 62 Nos.' },
+    { key: 'material',        label: 'Material',          placeholder: 'e.g. C45 Steel' },
+    { key: 'description',     label: 'Description',       placeholder: 'Expanded note text' },
+    { key: 'remarks',         label: 'Remarks',           placeholder: 'Additional notes' },
   ],
   balloon: [
-    { key: 'description', label: 'Description', placeholder: 'What this balloon references' },
-    { key: 'remarks',     label: 'Remarks',     placeholder: 'Additional notes' },
+    { key: 'description',     label: 'Description',       placeholder: 'What this balloon references' },
+    { key: 'remarks',         label: 'Remarks',           placeholder: 'Additional notes' },
   ],
 };
 
-const ALL_TYPES = ['Dimension', 'Tolerance', 'Surface Finish', 'GD&T', 'Note'];
+const ALL_TYPES = [
+  'Dimension',
+  'Diameter',
+  'Radius',
+  'Chamfer',
+  'Thread',
+  'Angle',
+  'Tolerance',
+  'Surface Finish',
+  'GD&T',
+  'Note',
+];
 
 // ── Single inline input ───────────────────────────────────────────────────────
 function DetailField({ label, value, placeholder, onSave }) {
@@ -206,8 +242,14 @@ export default function BalloonList({
   balloons,
   selectedBalloonId,
   setSelectedBalloonId,
+  selectedForExport,
+  toggleSelectForExport,
+  selectAllForExport,
+  deselectAllForExport,
+  onExportSelected,
   onUpdate,
   onDelete,
+  onClose,
 }) {
   const [expandedId, setExpandedId] = useState(null);
   const [confirmBalloon, setConfirmBalloon] = useState(null);
@@ -253,6 +295,10 @@ export default function BalloonList({
 
   const sorted = [...balloons].sort((a, b) => a.balloon_no - b.balloon_no);
 
+  const pageSelectedCount = balloons.filter(b => selectedForExport?.has?.(b.id)).length;
+  const isAllSelected = balloons.length > 0 && pageSelectedCount === balloons.length;
+  const isIndeterminate = pageSelectedCount > 0 && pageSelectedCount < balloons.length;
+
   return (
     <aside className="balloon-sidebar glass-panel">
       {/* P22: styled confirm dialog */}
@@ -263,9 +309,74 @@ export default function BalloonList({
       />
 
       <div className="sidebar-header">
-        <h2 className="sidebar-title">Annotations</h2>
-        <span className="balloon-count">{balloons.length} items</span>
+        <div className="sidebar-header-top">
+          <div className="sidebar-header-left">
+            <h2 className="sidebar-title">Annotations</h2>
+            <span className="balloon-count">{balloons.length} items</span>
+          </div>
+          {onClose && (
+            <button
+              className="sidebar-close-btn"
+              onClick={onClose}
+              title="Close sidebar"
+            >
+              <X size={16} />
+            </button>
+          )}
+        </div>
+
+        {balloons.length > 0 && (
+          <div className="sidebar-selection-bar">
+            <label className="select-all-label" title="Select or deselect all balloons on this page">
+              <input
+                type="checkbox"
+                className="custom-checkbox"
+                checked={isAllSelected}
+                ref={el => { if (el) el.indeterminate = isIndeterminate; }}
+                onChange={() => {
+                  if (isAllSelected) {
+                    deselectAllForExport();
+                  } else {
+                    selectAllForExport();
+                  }
+                }}
+              />
+              <span>Select All</span>
+            </label>
+
+            {selectedForExport?.size > 0 && (
+              <div className="selection-actions">
+                <span className="selection-badge">
+                  {selectedForExport.size} selected
+                </span>
+                <button
+                  className="clear-selection-btn"
+                  onClick={deselectAllForExport}
+                  title="Clear selection"
+                >
+                  Clear
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
+
+      {selectedForExport?.size > 0 && onExportSelected && (
+        <div className="quick-export-strip">
+          <div className="quick-export-info">
+            <CheckSquare size={13} className="text-success" />
+            <span><strong>{selectedForExport.size}</strong> selected</span>
+          </div>
+          <button
+            className="btn-quick-export"
+            onClick={onExportSelected}
+            title="Export selected balloons to Excel (.xlsx)"
+          >
+            <Download size={13} /> Export Selected
+          </button>
+        </div>
+      )}
 
       {sorted.length === 0 ? (
         <div className="sidebar-empty">
@@ -277,17 +388,32 @@ export default function BalloonList({
           {sorted.map(b => {
             const isSelected = b.id === selectedBalloonId;
             const isExpanded = b.id === expandedId;
+            const isExportChecked = selectedForExport ? selectedForExport.has(b.id) : false;
+
             return (
               <div
                 key={b.id}
                 id={`balloon-row-${b.id}`}
-                className={`balloon-card ${isSelected ? 'balloon-card--selected' : ''}`}
+                className={`balloon-card ${isSelected ? 'balloon-card--selected' : ''} ${isExportChecked ? 'balloon-card--export-selected' : ''}`}
               >
                 {/* ── Summary row ── */}
                 <div
                   className="balloon-summary"
                   onClick={() => handleRowClick(b.id)}
                 >
+                  <div
+                    className="summary-select"
+                    onClick={e => e.stopPropagation()}
+                    title="Select balloon for Excel export"
+                  >
+                    <input
+                      type="checkbox"
+                      className="custom-checkbox balloon-row-checkbox"
+                      checked={isExportChecked}
+                      onChange={() => toggleSelectForExport && toggleSelectForExport(b.id)}
+                    />
+                  </div>
+
                   <span className="balloon-badge" style={{ background: TYPE_COLORS[b.type] || '#6b7280' }}>
                     {b.balloon_no}
                   </span>
@@ -311,13 +437,46 @@ export default function BalloonList({
                           {b.nominal_value} {b.units || (b.text?.includes('°') ? '°' : (b.type === 'Surface Finish' ? 'µm' : 'mm'))}
                         </span>
                       )}
+                      {b.upper_limit && b.lower_limit && (
+                        <span
+                          className="summary-limits-tag"
+                          style={{
+                            marginLeft: '5px',
+                            fontSize: '10px',
+                            color: '#34d399',
+                            background: 'rgba(16, 185, 129, 0.12)',
+                            padding: '1px 4px',
+                            borderRadius: '3px',
+                            fontFamily: 'monospace',
+                          }}
+                          title={`Limits: ${b.lower_limit} to ${b.upper_limit}`}
+                        >
+                          [{b.lower_limit}..{b.upper_limit}]
+                        </span>
+                      )}
                     </span>
-                    <span
-                      className="type-chip"
-                      style={{ background: TYPE_COLORS[b.type] || '#6b7280' }}
-                    >
-                      {b.type}
-                    </span>
+                    <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                      {b.char_designator && b.char_designator !== 'Standard' && (
+                        <span
+                          style={{
+                            fontSize: '10px',
+                            padding: '1px 5px',
+                            borderRadius: '3px',
+                            fontWeight: 600,
+                            background: b.char_designator === 'Critical' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(59, 130, 246, 0.2)',
+                            color: b.char_designator === 'Critical' ? '#f87171' : '#60a5fa',
+                          }}
+                        >
+                          {b.char_designator}
+                        </span>
+                      )}
+                      <span
+                        className="type-chip"
+                        style={{ background: TYPE_COLORS[b.type] || '#6b7280' }}
+                      >
+                        {b.type}
+                      </span>
+                    </div>
                   </div>
 
                   <div className="summary-actions">

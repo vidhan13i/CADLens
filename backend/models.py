@@ -24,14 +24,18 @@ class Balloon(BaseModel):
     page: int
 
     # ── Common fields ─────────────────────────────────────────────────────────
-    description: Optional[str] = ""
-    remarks:     Optional[str] = ""
+    description:     Optional[str] = ""
+    remarks:         Optional[str] = ""
 
-    # ── Dimension-specific ────────────────────────────────────────────────────
+    # ── Dimension & AS9102 Inspection fields ──────────────────────────────────
     nominal_value:   Optional[str] = ""   # e.g. "39", "100"
     units:           Optional[str] = ""   # e.g. "mm", "°", "in"
     tolerance_upper: Optional[str] = ""   # e.g. "+0.039"
     tolerance_lower: Optional[str] = ""   # e.g. "-0.000"
+    upper_limit:     Optional[str] = ""   # e.g. "39.039" (calculated / Form 3)
+    lower_limit:     Optional[str] = ""   # e.g. "39.000" (calculated / Form 3)
+    char_designator: Optional[str] = ""   # Standard | Critical | Major | Reference | Basic
+    inspection_tool: Optional[str] = ""   # e.g. Caliper, Micrometer, CMM, Thread Gauge
     surface_finish:  Optional[str] = ""   # e.g. "Ra 1.6"
     process:         Optional[str] = ""   # e.g. "Drilling", "Turning"
 
@@ -40,7 +44,7 @@ class Balloon(BaseModel):
     tolerance_zone:  Optional[str] = ""   # e.g. "0.05", "Ø0.1"
 
     # ── General / Note-specific ───────────────────────────────────────────────
-    quantity:        Optional[str] = ""   # e.g. "62 Nos."
+    quantity:        Optional[str] = ""   # e.g. "62 Nos.", "4X"
     material:        Optional[str] = ""   # e.g. "C45 Steel"
 
 
@@ -54,6 +58,14 @@ class BalloonCreate(BaseModel):
     text: str
     type: str
     units: Optional[str] = "mm"
+    nominal_value:   Optional[str] = ""
+    tolerance_upper: Optional[str] = ""
+    tolerance_lower: Optional[str] = ""
+    upper_limit:     Optional[str] = ""
+    lower_limit:     Optional[str] = ""
+    char_designator: Optional[str] = ""
+    inspection_tool: Optional[str] = ""
+    quantity:        Optional[str] = ""
 
 
 class BalloonUpdate(BaseModel):
@@ -65,11 +77,15 @@ class BalloonUpdate(BaseModel):
     description:     Optional[str] = None
     remarks:         Optional[str] = None
 
-    # Dimension
+    # Dimension & AS9102 inspection
     nominal_value:   Optional[str] = None
     units:           Optional[str] = None
     tolerance_upper: Optional[str] = None
     tolerance_lower: Optional[str] = None
+    upper_limit:     Optional[str] = None
+    lower_limit:     Optional[str] = None
+    char_designator: Optional[str] = None
+    inspection_tool: Optional[str] = None
     surface_finish:  Optional[str] = None
     process:         Optional[str] = None
 

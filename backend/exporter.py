@@ -6,21 +6,25 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 
+# AS9102 Form 3 / FAI Characteristic Accountability Headers
 HEADERS = [
     "Balloon No.",
     "Drawing Reference / Text",
     "Type",
     "Nominal Value",
-    "Units",
     "Upper Tolerance",
     "Lower Tolerance",
+    "Upper Limit (Max)",
+    "Lower Limit (Min)",
+    "Units",
+    "Quantity",
+    "Classification / Designator",
+    "Inspection Tool / Method",
     "Surface Finish",
     "Process",
     "Datum Ref",
     "Tolerance Zone",
-    "Quantity",
     "Material",
-    "Description",
     "Page No.",
     "Remarks",
 ]
@@ -39,7 +43,7 @@ ALT_FILL = PatternFill(start_color="EFF6FF", end_color="EFF6FF", fill_type="soli
 
 def export_to_excel(balloons: List[Dict[str, Any]], output_path: str) -> str:
     """
-    Generate an Excel workbook from a list of balloon dicts.
+    Generate an AS9102 / FAI compliant Excel workbook from a list of balloon dicts.
 
     Args:
         balloons:     list of balloon dicts (from MongoDB, _id already converted to str)
@@ -50,8 +54,8 @@ def export_to_excel(balloons: List[Dict[str, Any]], output_path: str) -> str:
     """
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "Balloon Annotations"
-    ws.sheet_view.showGridLines = False
+    ws.title = "Characteristic Inspection"
+    ws.sheet_view.showGridLines = True
 
     # ── Header row ────────────────────────────────────────────────────────────
     ws.row_dimensions[1].height = 32
@@ -67,24 +71,28 @@ def export_to_excel(balloons: List[Dict[str, Any]], output_path: str) -> str:
 
     for row_idx, balloon in enumerate(sorted_balloons, start=2):
         unit = balloon.get("units", "")
-        if not unit and balloon.get("type") == "Dimension":
+        b_type = str(balloon.get("type", ""))
+        if not unit and b_type in ("Dimension", "Linear", "Diameter", "Radius"):
             unit = "°" if "°" in str(balloon.get("text", "")) else "mm"
 
         row_data = [
             balloon.get("balloon_no", ""),
             balloon.get("text", ""),
-            balloon.get("type", ""),
+            b_type,
             balloon.get("nominal_value", ""),
-            unit,
             balloon.get("tolerance_upper", ""),
             balloon.get("tolerance_lower", ""),
+            balloon.get("upper_limit", ""),
+            balloon.get("lower_limit", ""),
+            unit,
+            balloon.get("quantity", ""),
+            balloon.get("char_designator", "Standard"),
+            balloon.get("inspection_tool", ""),
             balloon.get("surface_finish", ""),
             balloon.get("process", ""),
             balloon.get("datum_ref", ""),
             balloon.get("tolerance_zone", ""),
-            balloon.get("quantity", ""),
             balloon.get("material", ""),
-            balloon.get("description", ""),
             balloon.get("page", ""),
             balloon.get("remarks", ""),
         ]
@@ -95,7 +103,7 @@ def export_to_excel(balloons: List[Dict[str, Any]], output_path: str) -> str:
             cell.border = THIN_BORDER
             if fill:
                 cell.fill = fill
-        ws.row_dimensions[row_idx].height = 20
+        ws.row_dimensions[row_idx].height = 22
 
     # ── Auto column widths ────────────────────────────────────────────────────
     for col_idx, header in enumerate(HEADERS, start=1):
@@ -105,8 +113,7 @@ def export_to_excel(balloons: List[Dict[str, Any]], output_path: str) -> str:
             val = ws.cell(row=row_idx, column=col_idx).value
             if val is not None:
                 max_len = max(max_len, len(str(val)))
-        # Cap at 50 to avoid absurdly wide columns
-        ws.column_dimensions[col_letter].width = min(max_len + 4, 50)
+        ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 40)
 
     # ── Save ──────────────────────────────────────────────────────────────────
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)

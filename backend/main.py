@@ -7,15 +7,16 @@ import os
 import re
 import logging
 import uuid
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 import cv2
 import numpy as np
 import pytesseract
 from bson import ObjectId
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 import pymupdf as fitz  # P2 fix: 'fitz' API deprecated
@@ -88,16 +89,19 @@ def _serialize_balloon(b: dict) -> dict:
     if not b.get("units"):
         b_type = b.get("type", "")
         b_text = str(b.get("text", ""))
-        if b_type == "Dimension":
+        if b_type in ("Dimension", "Linear", "Diameter", "Radius"):
             b["units"] = "°" if "°" in b_text else "mm"
         elif b_type == "Surface Finish":
             b["units"] = "µm"
         elif b_type == "Tolerance":
             b["units"] = "°" if "°" in b_text else "mm"
-        elif b_type == "GD&T":
-            b["units"] = "mm"
+        elif b_type in ("GD&T", "Angle"):
+            b["units"] = "mm" if b_type == "GD&T" else "°"
         else:
             b["units"] = ""
+    for k in ("upper_limit", "lower_limit", "char_designator", "inspection_tool", "quantity"):
+        if k not in b:
+            b[k] = ""
     return b
 
 
@@ -368,11 +372,21 @@ async def upload_pdf(file: UploadFile = File(...)):
 
         logger.info("Page %d: %d annotation(s) detected.", page_no, len(detections))
 
-        # Assign sequential balloon numbers and spread overlaps
+        # Assign sequential balloon numbers (sorted spatially) and spread overlaps
         page_balloons = assign_balloon_numbers(
-            detections, doc_id, page_no, start_no=balloon_counter)
+            detections,
+            doc_id,
+            page_no,
+            start_no=balloon_counter,
+            page_width=page_width,
+            page_height=page_height,
+        )
         page_balloons = spread_overlapping_balloons(
-            page_balloons, min_distance=40)
+            page_balloons,
+            min_distance=42,
+            page_width=page_width,
+            page_height=page_height,
+        )
 
         balloon_counter += len(page_balloons)
         all_balloons.extend(page_balloons)
@@ -497,20 +511,79 @@ async def delete_balloon(balloon_id: str):
     return {"deleted": balloon_id}
 
 
+# ── Export Models ─────────────────────────────────────────────────────────────
+class ExportSelectedRequest(BaseModel):
+    balloon_ids: List[str]
+
+
 # ── GET /export/{document_id} ─────────────────────────────────────────────────
 @app.get("/export/{document_id}")
-async def export_document(document_id: str):
+async def export_document(
+    document_id: str,
+    balloon_ids: Optional[str] = Query(None, description="Comma-separated balloon IDs for manual selection export")
+):
+    query = {"document_id": document_id}
+    is_selected = False
+    if balloon_ids:
+        raw_ids = [bid.strip() for bid in balloon_ids.split(",") if bid.strip()]
+        obj_ids = []
+        for bid in raw_ids:
+            try:
+                obj_ids.append(ObjectId(bid))
+            except Exception:
+                pass
+        if obj_ids:
+            query["_id"] = {"$in": obj_ids}
+            is_selected = True
+
     balloons = []
-    async for b in balloons_collection.find({"document_id": document_id}):
+    async for b in balloons_collection.find(query):
         b["id"] = str(b.pop("_id"))
         balloons.append(b)
 
     if not balloons:
         raise HTTPException(
             status_code=404,
-            detail="No balloons found for this document.")
+            detail="No balloons found matching export criteria.")
 
-    out_path = str(EXPORT_DIR / f"{document_id}_balloons.xlsx")
+    prefix = f"{document_id}_selected" if is_selected else f"{document_id}_balloons"
+    out_path = str(EXPORT_DIR / f"{prefix}_{int(time.time())}.xlsx")
+    export_to_excel(balloons, out_path)
+
+    filename = f"balloons_{document_id}_selected.xlsx" if is_selected else f"balloons_{document_id}.xlsx"
+    return FileResponse(
+        out_path,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument"
+            ".spreadsheetml.sheet"
+        ),
+        filename=filename,
+    )
+
+
+# ── POST /export/{document_id}/selected ───────────────────────────────────────
+@app.post("/export/{document_id}/selected")
+async def export_selected_balloons(document_id: str, req: ExportSelectedRequest):
+    raw_ids = [bid.strip() for bid in req.balloon_ids if bid and bid.strip()]
+    obj_ids = []
+    for bid in raw_ids:
+        try:
+            obj_ids.append(ObjectId(bid))
+        except Exception:
+            pass
+
+    if not obj_ids:
+        raise HTTPException(status_code=400, detail="No valid balloon IDs provided.")
+
+    balloons = []
+    async for b in balloons_collection.find({"document_id": document_id, "_id": {"$in": obj_ids}}):
+        b["id"] = str(b.pop("_id"))
+        balloons.append(b)
+
+    if not balloons:
+        raise HTTPException(status_code=404, detail="No selected balloons found.")
+
+    out_path = str(EXPORT_DIR / f"{document_id}_selected_{int(time.time())}.xlsx")
     export_to_excel(balloons, out_path)
 
     return FileResponse(
@@ -519,7 +592,7 @@ async def export_document(document_id: str):
             "application/vnd.openxmlformats-officedocument"
             ".spreadsheetml.sheet"
         ),
-        filename=f"balloons_{document_id}.xlsx",
+        filename=f"balloons_{document_id}_selected.xlsx",
     )
 
 

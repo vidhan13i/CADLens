@@ -12,6 +12,8 @@ export default function DrawingCanvas({
   balloons,
   selectedBalloonId,
   setSelectedBalloonId,
+  selectedForExport,
+  toggleSelectForExport,
   mode,
   zoom,
   onBalloonAdded,
@@ -40,9 +42,14 @@ export default function DrawingCanvas({
     if (!canvas || !pageWidth || !pageHeight) return;
     const ctx = canvas.getContext('2d');
 
-    canvas.width  = canvasW;
-    canvas.height = canvasH;
+    if (canvas.width !== canvasW) canvas.width = canvasW;
+    if (canvas.height !== canvasH) canvas.height = canvasH;
     ctx.clearRect(0, 0, canvasW, canvasH);
+
+    // Effective balloon radius in canvas pixels:
+    // Scale slightly with zoom but enforce minimum 13px radius so it's always clearly legible at 25% zoom
+    const effectiveR = Math.max(13, Math.round(BALLOON_R * Math.sqrt(Math.max(0.25, zoom))));
+    const fontSize = Math.max(10, Math.round(11 * Math.sqrt(Math.max(0.25, zoom))));
 
     balloons.forEach((b) => {
       const cx = b.x         * zoom;
@@ -50,20 +57,23 @@ export default function DrawingCanvas({
       const fx = b.feature_x * zoom;
       const fy = b.feature_y * zoom;
       const isSelected = b.id === selectedBalloonId;
+      const isExportSelected = selectedForExport && (
+        selectedForExport instanceof Set ? selectedForExport.has(b.id) : selectedForExport.includes(b.id)
+      );
 
       // Leader line
       const dx = fx - cx;
       const dy = fy - cy;
       const dist = Math.hypot(dx, dy);
-      if (dist > BALLOON_R + 2) {
-        const startX = cx + (dx / dist) * BALLOON_R;
-        const startY = cy + (dy / dist) * BALLOON_R;
+      if (dist > effectiveR + 2) {
+        const startX = cx + (dx / dist) * effectiveR;
+        const startY = cy + (dy / dist) * effectiveR;
 
         ctx.save();
         ctx.beginPath();
         ctx.moveTo(startX, startY);
         ctx.lineTo(fx, fy);
-        ctx.strokeStyle = isSelected ? '#3b82f6' : '#ef4444';
+        ctx.strokeStyle = isSelected ? '#3b82f6' : (isExportSelected ? '#10b981' : '#ef4444');
         ctx.lineWidth   = isSelected ? 2.5 : 1.8;
         ctx.stroke();
 
@@ -74,8 +84,36 @@ export default function DrawingCanvas({
         ctx.lineTo(fx - 9 * Math.cos(angle - Math.PI / 6), fy - 9 * Math.sin(angle - Math.PI / 6));
         ctx.lineTo(fx - 9 * Math.cos(angle + Math.PI / 6), fy - 9 * Math.sin(angle + Math.PI / 6));
         ctx.closePath();
-        ctx.fillStyle = isSelected ? '#3b82f6' : '#ef4444';
+        ctx.fillStyle = isSelected ? '#3b82f6' : (isExportSelected ? '#10b981' : '#ef4444');
         ctx.fill();
+        ctx.restore();
+      }
+
+      // Export selection outer ring
+      if (isExportSelected) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(cx, cy, effectiveR + 4.5, 0, Math.PI * 2);
+        ctx.strokeStyle = '#10b981';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+
+        // Small check badge indicator at top-right
+        const badgeX = cx + effectiveR - 2;
+        const badgeY = cy - effectiveR + 2;
+        ctx.beginPath();
+        ctx.arc(badgeX, badgeY, 5, 0, Math.PI * 2);
+        ctx.fillStyle = '#10b981';
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = '800 8px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('✓', badgeX, badgeY);
         ctx.restore();
       }
 
@@ -86,8 +124,8 @@ export default function DrawingCanvas({
       ctx.shadowOffsetY = 2;
 
       ctx.beginPath();
-      ctx.arc(cx, cy, BALLOON_R, 0, Math.PI * 2);
-      ctx.fillStyle = isSelected ? '#2563eb' : '#ef4444';
+      ctx.arc(cx, cy, effectiveR, 0, Math.PI * 2);
+      ctx.fillStyle = isSelected ? '#2563eb' : (isExportSelected ? '#059669' : '#ef4444');
       ctx.fill();
 
       ctx.shadowColor = 'transparent';
@@ -100,13 +138,13 @@ export default function DrawingCanvas({
 
       // Number label
       ctx.fillStyle    = '#ffffff';
-      ctx.font         = '700 11px Inter, -apple-system, sans-serif';
+      ctx.font         = `700 ${fontSize}px Inter, -apple-system, sans-serif`;
       ctx.textAlign    = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(String(b.balloon_no), cx, cy);
 
       // Feature-point drag handle (only when selected + has leader)
-      if (isSelected && dist > BALLOON_R + 2) {
+      if (isSelected && dist > effectiveR + 2) {
         ctx.beginPath();
         ctx.arc(fx, fy, 4.5, 0, Math.PI * 2);
         ctx.fillStyle   = '#3b82f6';
@@ -117,13 +155,25 @@ export default function DrawingCanvas({
       }
       ctx.restore();
     });
-  }, [balloons, selectedBalloonId, zoom, canvasW, canvasH, pageWidth, pageHeight]);
+  }, [balloons, selectedBalloonId, selectedForExport, zoom, canvasW, canvasH, pageWidth, pageHeight]);
 
-  useEffect(() => { draw(); }, [draw]);
+  useEffect(() => {
+    // Immediate draw + frame scheduled draw to ensure HTML5 canvas is ready
+    draw();
+    const animId = requestAnimationFrame(() => {
+      draw();
+    });
+    const timer = setTimeout(draw, 50);
+    return () => {
+      cancelAnimationFrame(animId);
+      clearTimeout(timer);
+    };
+  }, [draw]);
 
   // ── Hit tests ────────────────────────────────────────────────────────────
   const hitBalloon = (imgX, imgY) => {
-    const hitR = (BALLOON_R + 4) / zoom;
+    const effectiveR = Math.max(13, Math.round(BALLOON_R * Math.sqrt(Math.max(0.25, zoom))));
+    const hitR = (effectiveR + 6) / zoom;
     for (const b of balloons) {
       if (Math.hypot(imgX - b.x, imgY - b.y) <= hitR) return b;
     }
@@ -131,7 +181,7 @@ export default function DrawingCanvas({
   };
 
   const hitFeature = (imgX, imgY) => {
-    const hitR = 8 / zoom;
+    const hitR = 10 / zoom;
     for (const b of balloons) {
       if (b.id === selectedBalloonId &&
           Math.hypot(imgX - b.feature_x, imgY - b.feature_y) <= hitR) return b;
@@ -160,6 +210,10 @@ export default function DrawingCanvas({
     // Balloon body drag / click
     const bHit = hitBalloon(imgX, imgY);
     if (bHit) {
+      if (e.shiftKey) {
+        toggleSelectForExport && toggleSelectForExport(bHit.id);
+        return;
+      }
       dragRef.current = {
         id: bHit.id, part: 'balloon',
         origX: bHit.x,          origY: bHit.y,
@@ -218,16 +272,19 @@ export default function DrawingCanvas({
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvasW, canvasH);
 
+    const effectiveR = Math.max(13, Math.round(BALLOON_R * Math.sqrt(Math.max(0.25, zoom))));
+    const fontSize = Math.max(10, Math.round(11 * Math.sqrt(Math.max(0.25, zoom))));
+
     updated.forEach((b) => {
       const cx = b.x * zoom, cy = b.y * zoom;
       const fx = b.feature_x * zoom, fy = b.feature_y * zoom;
       const isSelected = b.id === selectedBalloonId;
       const dv = Math.hypot(fx - cx, fy - cy);
 
-      if (dv > BALLOON_R + 2) {
+      if (dv > effectiveR + 2) {
         const ang = Math.atan2(fy - cy, fx - cx);
         ctx.beginPath();
-        ctx.moveTo(cx + (fx - cx) / dv * BALLOON_R, cy + (fy - cy) / dv * BALLOON_R);
+        ctx.moveTo(cx + (fx - cx) / dv * effectiveR, cy + (fy - cy) / dv * effectiveR);
         ctx.lineTo(fx, fy);
         ctx.strokeStyle = isSelected ? '#3b82f6' : '#ef4444';
         ctx.lineWidth = 1.8;
@@ -243,7 +300,7 @@ export default function DrawingCanvas({
       }
 
       ctx.beginPath();
-      ctx.arc(cx, cy, BALLOON_R, 0, Math.PI * 2);
+      ctx.arc(cx, cy, effectiveR, 0, Math.PI * 2);
       ctx.fillStyle = isSelected ? '#2563eb' : '#ef4444';
       ctx.fill();
       ctx.strokeStyle = '#ffffff';
@@ -251,7 +308,7 @@ export default function DrawingCanvas({
       ctx.stroke();
 
       ctx.fillStyle    = '#ffffff';
-      ctx.font         = '700 11px Inter, sans-serif';
+      ctx.font         = `700 ${fontSize}px Inter, sans-serif`;
       ctx.textAlign    = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(String(b.balloon_no), cx, cy);
@@ -310,14 +367,37 @@ export default function DrawingCanvas({
   return (
     <div
       ref={containerRef}
-      style={{ overflow: 'auto', width: '100%', height: '100%' }}
+      className="canvas-scroll-container"
+      style={{
+        overflow: 'auto',
+        width: '100%',
+        height: '100%',
+        flex: 1,
+        minHeight: 0,
+        display: 'flex',
+      }}
     >
       {imgSrc ? (
-        <div style={{ position: 'relative', width: `${canvasW}px`, display: 'inline-block' }}>
+        <div
+          className="canvas-wrapper"
+          style={{
+            position: 'relative',
+            width: `${canvasW}px`,
+            height: `${canvasH}px`,
+            margin: 'auto',
+            flexShrink: 0,
+            boxShadow: '0 8px 30px rgba(0, 0, 0, 0.45)',
+            background: '#ffffff',
+          }}
+        >
           <img
             src={imgSrc}
             alt={`Page ${currentPage}`}
             draggable={false}
+            onLoad={() => {
+              // Ensure canvas redraws cleanly as soon as the image completes loading
+              requestAnimationFrame(draw);
+            }}
             style={{ width: `${canvasW}px`, height: `${canvasH}px`, display: 'block' }}
           />
           <canvas
@@ -330,7 +410,11 @@ export default function DrawingCanvas({
             onMouseMove={handleMouseMove}
             style={{
               position: 'absolute',
-              top: 0, left: 0,
+              top: 0,
+              left: 0,
+              width: `${canvasW}px`,
+              height: `${canvasH}px`,
+              zIndex: 10,
               pointerEvents: 'all',
             }}
           />

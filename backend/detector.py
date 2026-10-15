@@ -45,7 +45,8 @@ _TITLE_BLOCK_REJECT = re.compile(
     r'MATERIAL|HEAT\s*TREATMENT|HARDNESS|DRAWING\s*NO|SHEET|CUST\s*FILE|'
     r'\bREV\b|PVT\.?\s*LTD|GEARS|LIBERTY|STEEL|TOTAL\s*WT|'
     r'^NOTE\s*:|^NOTES\s*:|TOLERANCE\s*:|SCALE\s*:|DRG\.|'
-    r'^VIEW\s+[A-Z]|^SECTION\s|^SEC\.\s|\bQTY\b|\bNOS\.?\b(?!\s*\d)',
+    r'^VIEW\s+[A-Z]|^SECTION\s|^SEC\.\s|\bQTY\b|\bNOS\.?\b(?!\s*\d)|'
+    r'\b42Cr4\b|\b3\.030\b|\bBRACKET\b|\bRG\s*-\s*LS\b|\bRATNA\b|\bGEARS\b',
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -56,7 +57,7 @@ _SECTION_VIEW = re.compile(
 
 _ENGLISH_WORDS = re.compile(
     r'^(?:are|the|and|for|not|all|nos|with|this|that|from|into|each|item|'
-    r'date|rev|total|details|bracket|ratna|liberty|steel|sheet)$',
+    r'date|rev|total|details|bracket|ratna|liberty|steel|sheet|weight|wt|material|pvt|ltd)$',
     re.IGNORECASE,
 )
 
@@ -66,44 +67,117 @@ _CLEAN_PREFIX = re.compile(r'^[_\-\.\|\\\/\s]+')
 # MacRoman / Windows-1252 degree-symbol variants that CAD fonts sometimes embed
 _DEGREE_FIXUP = re.compile(r'[\x83\xb0\u00b0]')
 
-# Strict engineering dimension patterns (P4 fix — replaces loose [\d])
+# Strict engineering dimension patterns (Expanded for industrial FAI / AS9102 drawings)
 _DIM_PATTERNS = re.compile(
-    r'[Øøø∅]\s*\d'           # Diameter:  Ø50, ø12
-    r'|[Rr]\s*\d'             # Radius:    R6, r3
-    r'|[Mm]\d+\s*[xX×]'      # Thread:    M10x1.5, M6x1
-    r'|[Hh]\d'                # Fit:       H8, h7
-    r'|\d+\.\d+'              # Decimal:   39.5, 0.150  (clearly dimensional)
-    r'|\d+\s*[°\x83]'        # Angle:     45°, 30° (incl. MacRoman \x83)
-    r'|\d+\s*mm'              # With unit: 50mm, 100mm
-    r'|\d+\s*[Ii][Nn][Cc][Hh]' # With unit: 2inch
-    r'|±\s*\d'                # Symmetric tolerance: ±0.05
-    r'|\+\s*\d[\d\.]*\s*[/\\]\s*-\s*\d'  # Bilateral: +0.039/-0.000
-    r'|[Dd][Ii][Aa]\.?\s*\d'  # Dia prefix: Dia 50, DIA50
-    r'|\d+\s*[xX]\s*\d+\s*[°\x83]'  # Chamfer: 1x45°
+    r'[Øøø∅]\s*\d+'                                # Diameter:  Ø50, ø12
+    r'|\b(?:DIA|Dia|dia)\.?\s*\d+'                 # Dia prefix: DIA 50, Dia. 25
+    r'|\b(?:SR|sr|[Rr])\s*\d+'                     # Radius:    R6, r3, SR10 (spherical)
+    r'|\b[Mm]\d+(?:\s*[xX×]\s*\d+(?:\.\d+)?)?(?:-[0-9][A-Za-z]+)?'  # Thread: M10, M10x1.5, M6-6H
+    r'|\b(?:RC|Rc|rc|Rp|G|NPT|BSPT|UNC|UNF)\s*[\d/]+(?:\s*[xX×]\s*[\d\.]+)?' # Pipe / Taper Thread: RC7, Rc 1/4
+    r'|\b[Cc]\s*\d+(?:\.\d+)?'                     # Chamfer:   C1, C1.5
+    r'|\b\d+\s*[xX×]\s*\d+\s*[°\x83]'              # Chamfer:   1x45°, 2 X 45°
+    r'|\b\d+(?:\.\d+)?\s*[HhGgKkNnPpFfEe][0-9]{1,2}\b' # Fit:  39H8, 10 H12, 30h7
+    r'|\b\d+\.\d+'                                 # Decimal:   39.5, 1845.0, 2175.8
+    r'|\b\d+\s*[°\x83]'                            # Angle:     45°, 30° (incl. MacRoman \x83)
+    r'|\b\d+\s*(?:mm|in|inch)\b'                    # With unit: 50mm, 2inch
+    r'|±\s*\d+'                                    # Symmetric: ±0.05
+    r'|\+\s*\d+[\.,]?\d*\s*[/\\]\s*[-−]?\s*\d+'    # Bilateral: +0.039/-0.000
+    r'|\b\d+\.\d+\s*[/\\-]\s*\d+\.\d+\b'         # Limits:    12.5 - 12.8, 39.039/39.000
+    r'|\b\d+\s*[xX×]\s*(?:[ØøRMC]|Dia)?\s*\d+'   # Multiplier: 4X Ø12, 2X R15.7
+    r'|\b\d+\s*-\s*[ØøR]\s*\d+'                  # Multiplier: 2-Ø10
+    r'|\(\s*\d+(?:\.\d+)?\s*\)'                   # Reference: (1845.0)
+    r'|\[\s*\d+(?:\.\d+)?\s*\]'                   # Basic:     [50.0]
 )
 
 _SURFACE_FINISH = re.compile(r'\b(?:Ra|Rz|Rt|Rq)\b', re.IGNORECASE)
-_GDNT_SYMBOLS   = re.compile(r'[⊙⊖⊕⊗⌀○△□◇⊥∥∠⌖]')
+_GDNT_SYMBOLS   = re.compile(r'[⊙⊖⊕⊗⌀○△□◇⊥∥∠⌖⌒↗◎平]')
 _GDNT_PATTERN   = re.compile(r'^\s*0\.\d+\s+[A-Z]\s*$')
 
 # ISO fit code pattern: e.g. H8, h7, g6, H12
 _FIT_CODE = re.compile(r'([HhKkNnPpFfEeGg])(\d{1,2})$')
 
 
+def _calculate_limits(nominal: str, upper_tol: str, lower_tol: str) -> Tuple[str, str]:
+    """Calculate upper and lower limits for AS9102 Form 3 characteristic accountability."""
+    try:
+        nom_str = nominal.strip()
+        if 'x' in nom_str.lower():
+            nom_str = nom_str.lower().split('x')[-1]
+        nom_clean = re.sub(r'[^\d\.]', '', nom_str)
+        if not nom_clean:
+            return ('', '')
+        nom_val = float(nom_clean)
+
+        up_clean = re.sub(r'[^\d\.\+\-]', '', upper_tol.strip())
+        low_clean = re.sub(r'[^\d\.\+\-]', '', lower_tol.strip())
+
+        if not up_clean and not low_clean:
+            return ('', '')
+
+        up_val = float(up_clean) if up_clean else 0.0
+        low_val = float(low_clean) if low_clean else 0.0
+
+        upper_limit = round(nom_val + up_val, 4)
+        lower_limit = round(nom_val + low_val, 4)
+        return (f"{upper_limit:g}", f"{lower_limit:g}")
+    except Exception:
+        return ('', '')
+
+
+def _determine_designator(text: str) -> str:
+    """Classify characteristic designator per AS9102 (Reference, Basic, Critical, Major, Standard)."""
+    t = text.strip()
+    if (t.startswith('(') and t.endswith(')')) or 'REF' in t.upper():
+        return 'Reference'
+    if (t.startswith('[') and t.endswith(']')) or 'BASIC' in t.upper():
+        return 'Basic'
+    if re.search(r'\b[HhGgKkNnPpFfEe]\d{1,2}\b', t) or 'CRITICAL' in t.upper() or 'KEY' in t.upper():
+        return 'Critical'
+    if '±0.0' in t or '+0.0' in t:
+        return 'Major'
+    return 'Standard'
+
+
+def _suggest_inspection_tool(text: str, ann_type: str) -> str:
+    """Recommend industrial inspection tool/method per characteristic type."""
+    t = text.upper()
+    if 'RA' in t or 'RZ' in t or ann_type == 'Surface Finish':
+        return 'Surface Roughness Tester (Profilometer)'
+    if 'RC' in t or re.search(r'\bM\d+', t) or 'UNC' in t or 'UNF' in t:
+        return 'Thread Plug / Ring Gauge'
+    if 'Ø' in text or 'DIA' in t:
+        return 'Bore Gauge / Outside Micrometer'
+    if ('R' in text and 'RC' not in text) or 'SR' in t:
+        return 'Radius Gauge / Optical Comparator'
+    if '°' in text or 'DEG' in t:
+        return 'Bevel Protractor / Optical Comparator'
+    if ann_type == 'GD&T' or any(c in text for c in '⌖⊥∥∠'):
+        return 'CMM / Dial Indicator'
+    if ann_type == 'Tolerance':
+        return 'Digital Micrometer / Height Gauge'
+    if ann_type == 'Note':
+        return 'Visual Inspection'
+    return 'Digital Vernier Caliper / Height Gauge'
+
+
 # ═════════════════════════════════════════════════════════════════════════════
-#  STRUCTURED FIELD PARSER  (P8 fix)
+#  STRUCTURED FIELD PARSER  (Industrial FAI / AS9102 Compliant)
 # ═════════════════════════════════════════════════════════════════════════════
 
 def _parse_annotation_fields(text: str, ann_type: str) -> Dict[str, str]:
     """
-    Extract nominal_value, tolerances, surface_finish, etc. from annotation text.
-    Returns a dict whose keys match the Balloon model's optional fields.
+    Extract nominal_value, tolerances, limits, tool suggestions, etc. from annotation text.
+    Returns a dict whose keys match the Balloon model's fields.
     """
     fields: Dict[str, str] = {
         'nominal_value':   '',
         'units':           '',
         'tolerance_upper': '',
         'tolerance_lower': '',
+        'upper_limit':     '',
+        'lower_limit':     '',
+        'char_designator': 'Standard',
+        'inspection_tool': '',
         'surface_finish':  '',
         'process':         '',
         'datum_ref':       '',
@@ -116,6 +190,18 @@ def _parse_annotation_fields(text: str, ann_type: str) -> Dict[str, str]:
     # Normalise degree symbols before parsing
     t = _DEGREE_FIXUP.sub('°', text.strip())
 
+    fields['char_designator'] = _determine_designator(t)
+    fields['inspection_tool'] = _suggest_inspection_tool(t, ann_type)
+
+    # 1. Quantity / Multiplier extraction (e.g. 4X Ø12, 2X R15.7, 4 HOLES)
+    m_qty = re.search(r'\b(\d+)\s*[xX×]\s*', t)
+    if not m_qty:
+        m_qty = re.search(r'\b(\d+)\s*-\s*[ØøR]', t)
+    if not m_qty:
+        m_qty = re.search(r'\b(\d+)\s*(?:HOLES?|PLACES?|NOS?\.?)\b', t, re.IGNORECASE)
+    if m_qty:
+        fields['quantity'] = m_qty.group(1)
+
     if ann_type == 'Surface Finish':
         fields['units'] = 'µm'
         m = re.search(r'(Ra|Rz|Rt|Rq)\s*(\d+\.?\d*)', t, re.IGNORECASE)
@@ -126,7 +212,6 @@ def _parse_annotation_fields(text: str, ann_type: str) -> Dict[str, str]:
 
     if ann_type == 'GD&T':
         fields['units'] = 'mm'
-        # e.g. "⊥ 0.05 A-B" or "0.05 A"
         m = re.search(r'(\d+\.?\d+)\s+([A-Z](?:-[A-Z])*)', t)
         if m:
             fields['tolerance_zone'] = m.group(1)
@@ -136,7 +221,7 @@ def _parse_annotation_fields(text: str, ann_type: str) -> Dict[str, str]:
     if ann_type == 'Tolerance':
         fields['units'] = '°' if '°' in t else 'mm'
         # Bilateral: +0.039 / -0.000
-        m_bi = re.search(r'\+\s*(\d+\.?\d*)\s*[/\\]\s*-?\s*(\d+\.?\d*)', t)
+        m_bi = re.search(r'\+\s*(\d+\.?\d*)\s*[/\\]\s*[-−]?\s*(\d+\.?\d*)', t)
         if m_bi:
             fields['tolerance_upper'] = f'+{m_bi.group(1)}'
             fields['tolerance_lower'] = f'-{m_bi.group(2)}'
@@ -154,51 +239,73 @@ def _parse_annotation_fields(text: str, ann_type: str) -> Dict[str, str]:
                 fields['tolerance_zone'] = t
         return fields
 
-    if ann_type == 'Dimension':
+    if ann_type in ('Dimension', 'Linear', 'Diameter', 'Radius', 'Angle'):
         fields['units'] = '°' if '°' in t else 'mm'
-        # Chamfer:  1x45°
-        m_cha = re.search(r'(\d+)\s*[xX]\s*(\d+)\s*°', t)
+
+        # Chamfer: 1x45°, C1.5
+        m_cha = re.search(r'(\d+)\s*[xX×]\s*(\d+)\s*°', t)
         if m_cha:
             fields['nominal_value'] = f'{m_cha.group(1)}x{m_cha.group(2)}°'
             fields['process']       = 'CHAMFER'
             fields['units']         = '°'
             return fields
+        m_c = re.search(r'\b[Cc]\s*(\d+\.?\d*)', t)
+        if m_c:
+            fields['nominal_value'] = f'C{m_c.group(1)}'
+            fields['process']       = 'CHAMFER'
+            return fields
 
-        # Diameter: Ø50, ø50, Dia 50, DIA50mm
+        # Diameter: Ø48, ø50, Dia 50, DIA50mm
         m_dia = re.search(r'(?:[Øøø∅]|[Dd][Ii][Aa]\.?)\s*(\d+\.?\d*)', t)
         if m_dia:
             fields['nominal_value'] = m_dia.group(1)
-            # Still parse tolerance / fit if present on same line
 
-        # Radius: R6, r3.5
-        m_rad = re.search(r'^[Rr]\s*(\d+\.?\d*)', t) if not m_dia else None
+        # Radius: R13.2, r3.5, SR10
+        m_rad = re.search(r'(?:[Ss][Rr]|[Rr])\s*(\d+\.?\d*)', t) if not m_dia else None
         if m_rad:
             fields['nominal_value'] = m_rad.group(1)
 
-        # Thread: M10x1.5 (only if no dia/radius yet)
+        # Metric Thread: M10x1.5, M10
         m_thr = None
         if not m_dia and not m_rad:
-            m_thr = re.search(r'[Mm](\d+)\s*[xX×]\s*(\d+\.?\d*)', t)
+            m_thr = re.search(r'\b[Mm](\d+)(?:\s*[xX×]\s*(\d+\.?\d*))?', t)
             if m_thr:
-                fields['nominal_value'] = f'M{m_thr.group(1)}x{m_thr.group(2)}'
+                pitch = f'x{m_thr.group(2)}' if m_thr.group(2) else ''
+                fields['nominal_value'] = f'M{m_thr.group(1)}{pitch}'
 
-        # Fit code with nominal:  39H8,  10 H12,  30 H11
+        # Pipe / Gas / Taper Thread: RC7, Rc 1/4, G 1/2
+        if not m_dia and not m_rad and not m_thr:
+            m_rc = re.search(r'\b(RC|Rc|Rp|G|NPT|BSPT|UNC|UNF)\s*([\d/]+)', t, re.IGNORECASE)
+            if m_rc:
+                fields['nominal_value'] = f'{m_rc.group(1).upper()} {m_rc.group(2)}'
+                fields['process']       = 'THREAD'
+
+        # Fit code with nominal: 39H8, 10 H12, 30 H11
         m_fit = re.search(r'(\d+\.?\d*)\s*([HhGgKkNnPpFfEe]\d{1,2})', t)
         if m_fit:
             if not fields['nominal_value']:
                 fields['nominal_value'] = m_fit.group(1)
-            # Record ISO fit code in tolerance_zone
             fields['tolerance_zone'] = m_fit.group(2).upper()
+            fields['char_designator'] = 'Critical'
 
-        # If we still have no nominal, extract first number
+        # Limit dimensions: 12.5 / 12.8 or 39.039 - 39.000
+        m_lim = re.search(r'(\d+\.\d+)\s*[/\\-]\s*(\d+\.\d+)', t)
+        if m_lim:
+            v1, v2 = float(m_lim.group(1)), float(m_lim.group(2))
+            fields['upper_limit'] = f"{max(v1, v2):g}"
+            fields['lower_limit'] = f"{min(v1, v2):g}"
+            if not fields['nominal_value']:
+                fields['nominal_value'] = f"{min(v1, v2):g}"
+
+        # If we still have no nominal, extract numeric value
         if not fields['nominal_value']:
-            m_num = re.search(r'(\d+\.?\d*)', t)
+            m_num = re.search(r'(\d+\.\d+|\b\d+\b)', t)
             if m_num:
                 fields['nominal_value'] = m_num.group(1)
 
-        # Bilateral tolerance on same line: (- 0.000 / + 0.039) or similar
+        # Bilateral tolerance on same line: (+0.039 / -0.000) or (+ 0.05 / 0.0)
         m_bi = re.search(
-            r'\+\s*(\d+\.?\d*)\s*(?:[/\\-]|$).*?-\s*(\d+\.?\d*)'
+            r'\+\s*(\d+\.?\d*)\s*(?:[/\\-]|$).*?[-−]?\s*(\d+\.?\d*)'
             r'|\([-−]\s*(\d+\.?\d*)\).*?\(\+\s*(\d+\.?\d*)\)',
             t,
         )
@@ -210,14 +317,29 @@ def _parse_annotation_fields(text: str, ann_type: str) -> Dict[str, str]:
                 fields['tolerance_upper'] = f'+{m_bi.group(4)}'
                 fields['tolerance_lower'] = f'-{m_bi.group(3)}'
 
+        # Symmetric ± tolerance on same line: e.g. 50 ± 0.05
+        m_sym = re.search(r'[±]\s*(\d+\.?\d*)', t)
+        if m_sym and not fields['tolerance_upper']:
+            fields['tolerance_upper'] = f'+{m_sym.group(1)}'
+            fields['tolerance_lower'] = f'-{m_sym.group(1)}'
+
+        # Calculate Upper & Lower Limits for AS9102 Form 3
+        if not fields['upper_limit'] and fields['nominal_value'] and (fields['tolerance_upper'] or fields['tolerance_lower']):
+            up_lim, low_lim = _calculate_limits(
+                fields['nominal_value'],
+                fields['tolerance_upper'],
+                fields['tolerance_lower'],
+            )
+            fields['upper_limit'] = up_lim
+            fields['lower_limit'] = low_lim
+
         return fields
 
     if ann_type == 'Note':
-        m_qty = re.search(r'(\d+)\s*[Nn]os?\.?', t)
-        if m_qty:
-            fields['quantity'] = m_qty.group(1)
         fields['description'] = t
         return fields
+
+    return fields
 
     return fields
 
@@ -342,6 +464,33 @@ def _deduplicate(
 #  PATH 1 — NATIVE PDF TEXT EXTRACTION  (P10 fix — PRIMARY PATH)
 # ═════════════════════════════════════════════════════════════════════════════
 
+def _detect_title_block_bounds(raw_words: List, page_w: float, page_h: float) -> Optional[Tuple[float, float, float, float]]:
+    """
+    Find title block bounding box dynamically by locating title block anchor words
+    in the lower section (y > 0.65 * page_h) of the drawing.
+    Any annotation falling inside this box will be strictly excluded.
+    """
+    anchor_keywords = {
+        'drawn', 'checked', 'approved', 'customer', 'material', 'hardness',
+        'drawing', 'drg', 'ratna', 'gears', 'liberty', 'bracket', 'total',
+        'wt', 'weight', 'sheet', 'scale', 'rev', 'pvt', 'ltd'
+    }
+    anchors = []
+    for w in raw_words:
+        txt = re.sub(r'[\W_]', '', str(w[4])).lower()
+        if txt in anchor_keywords and w[1] > page_h * 0.65 and w[0] > page_w * 0.30:
+            anchors.append(w)
+
+    if len(anchors) >= 2:
+        # Bounding box of title block anchors with padding to cover table cells
+        min_x = min(w[0] for w in anchors) - 20.0
+        min_y = min(w[1] for w in anchors) - 15.0
+        max_x = page_w
+        max_y = page_h
+        return (min_x, min_y, max_x, max_y)
+    return None
+
+
 def detect_from_pdf_page(
     page: Any,
     dpi_scale: float = 300.0 / 72.0,
@@ -369,26 +518,20 @@ def detect_from_pdf_page(
     x_min = page_w * BORDER_FRAC_X
     x_max = page_w * (1.0 - BORDER_FRAC_X)
     y_min = page_h * BORDER_FRAC_Y
-    y_max = page_h * TITLE_BLOCK_FRAC  # P5 fix: was 0.97 for landscape
+    y_max = page_h * (1.0 - BORDER_FRAC_Y)
 
     # words → (x0, y0, x1, y1, text, block_no, line_no, word_no)
     raw_words = page.get_text('words')
 
-    # ── Group words by BLOCK first, then merge stacked tolerance lines (D1 fix) ──
-    # In CAD PDFs a dimension callout like:
-    #   Line 0:  39  H8   (stacked upper line)
-    #   Line 1:  (+0.039)
-    #   Line 2:  (-0.000)
-    # all live in the SAME block. We merge the whole block into one text so
-    # the field parser can see both the nominal value and the tolerances.
+    # Detect title block zone dynamically
+    tb_box = _detect_title_block_bounds(raw_words, page_w, page_h)
+
+    # ── Group words by BLOCK first, then merge stacked tolerance lines ──────────
     block_map: Dict[int, List] = {}
     for w in raw_words:
         block_map.setdefault(int(w[5]), []).append(w)
 
     annotations: List[Dict] = []
-
-    # Track which block+line combos we have already emitted as a merged block
-    # to avoid double-counting when a block contains a standalone valid line.
     emitted_blocks: set = set()
 
     for blk_id, blk_words in block_map.items():
@@ -404,33 +547,48 @@ def detect_from_pdf_page(
         by1 = max(w[3] for w in blk_words_s)
         cx_blk = (bx0 + bx1) / 2.0
         cy_blk = (by0 + by1) / 2.0
+        blk_h = by1 - by0
 
-        # Spatial exclusion
+        # Smart spatial exclusion: border check + title-block corner check
         if cx_blk < x_min or cx_blk > x_max:
             continue
         if cy_blk < y_min or cy_blk > y_max:
             continue
+        # Title block dynamic exclusion
+        if tb_box and (bx1 >= tb_box[0] and by1 >= tb_box[1]):
+            continue
+        # Fixed corner backup check
+        if cx_blk > page_w * 0.65 and cy_blk > page_h * 0.76:
+            continue
+        if _TITLE_BLOCK_REJECT.search(blk_text):
+            continue
 
-        # If the merged block text classifies as a dimension/note with tolerances
-        # embedded, emit it as a single merged balloon.
-        if blk_text and _has_tolerance_stack(blk_words_s):
+        # If the block has stacked tolerances OR is a compact multi-line callout
+        # (e.g. 4X Ø48 THRU, or stacked tolerances), emit as a single merged balloon.
+        is_stacked = _has_tolerance_stack(blk_words_s) or (blk_h <= 45.0 and len(blk_words_s) > 1 and _DIM_PATTERNS.search(blk_text))
+        if blk_text and is_stacked:
             ann_type = _classify_text_strict(blk_text, require_engineering=False) or 'Dimension'
             cx_img = round(cx_blk * dpi_scale, 1)
             cy_img = round(cy_blk * dpi_scale, 1)
-            bx_img = round(cx_img + 60.0, 1)
-            by_img = round(cy_img - 60.0, 1)
+
             fields = _parse_annotation_fields(blk_text, ann_type)
-            # Try to extract tolerances from individual stacked lines
             upper, lower = _extract_stacked_tolerances(blk_words_s)
             if upper:
                 fields['tolerance_upper'] = upper
             if lower:
                 fields['tolerance_lower'] = lower
+            if fields['nominal_value'] and (fields['tolerance_upper'] or fields['tolerance_lower']):
+                up_l, low_l = _calculate_limits(fields['nominal_value'], fields['tolerance_upper'], fields['tolerance_lower'])
+                if up_l:
+                    fields['upper_limit'] = up_l
+                if low_l:
+                    fields['lower_limit'] = low_l
+
             annotations.append({
                 'text':      blk_text,
                 'type':      ann_type,
-                'x':         bx_img,
-                'y':         by_img,
+                'x':         cx_img,
+                'y':         cy_img,
                 'feature_x': cx_img,
                 'feature_y': cy_img,
                 **fields,
@@ -455,10 +613,14 @@ def detect_from_pdf_page(
             cx_pt = (lx0 + lx1) / 2.0
             cy_pt = (ly0 + ly1) / 2.0
 
-            # Spatial exclusion (in PDF points)
             if cx_pt < x_min or cx_pt > x_max:
                 continue
             if cy_pt < y_min or cy_pt > y_max:
+                continue
+            # Dynamic title block exclusion
+            if tb_box and (lx1 >= tb_box[0] and ly1 >= tb_box[1]):
+                continue
+            if cx_pt > page_w * 0.65 and cy_pt > page_h * 0.76:
                 continue
 
             line_text = ' '.join(w[4] for w in words_s).strip()
@@ -470,22 +632,23 @@ def detect_from_pdf_page(
             if not line_text:
                 continue
 
+            if _TITLE_BLOCK_REJECT.search(line_text):
+                continue
+
             ann_type = _classify_text_strict(line_text, require_engineering=False)
             if ann_type is None:
                 continue
 
             cx_img = round(cx_pt * dpi_scale, 1)
             cy_img = round(cy_pt * dpi_scale, 1)
-            bx_img = round(cx_img + 60.0, 1)
-            by_img = round(cy_img - 60.0, 1)
 
             fields = _parse_annotation_fields(line_text, ann_type)
 
             annotations.append({
                 'text':      line_text,
                 'type':      ann_type,
-                'x':         bx_img,
-                'y':         by_img,
+                'x':         cx_img,
+                'y':         cy_img,
                 'feature_x': cx_img,
                 'feature_y': cy_img,
                 **fields,
@@ -499,8 +662,9 @@ def _has_tolerance_stack(words: List) -> bool:
     lines = {int(w[6]) for w in words}
     if len(lines) < 2:
         return False
-    tol_re = re.compile(r'^[\+\-±]?\d+\.\d+$')
-    return any(tol_re.match(w[4].strip()) for w in words)
+    # Matches decimals with or without sign, brackets, or slashes, e.g. +0.039, -0.130, (-0.000 / -0.130), 0.000
+    tol_re = re.compile(r'[\+\-−±]?\s*\d+\.\d+')
+    return any(tol_re.search(w[4].strip()) for w in words)
 
 
 def _extract_stacked_tolerances(words: List) -> Tuple[str, str]:
