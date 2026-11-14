@@ -1,224 +1,489 @@
-# CADLens — AI-Powered CAD Balloon Detection & Annotation
+# CADLens
 
-> Automatically detect, annotate, and export dimensional balloons from engineering PDF drawings using native PDF vector extraction, computer vision, and an interactive canvas editor. Compliant with AS9102 Form 3 / First Article Inspection (FAI) standards.
+Automatically detect, number, and export dimensional annotations from engineering PDF drawings using native vector text extraction, an OCR fallback pipeline, and an interactive canvas editor.
 
-[![Python](https://img.shields.io/badge/Python-3.9–3.12-blue?logo=python)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.115-green?logo=fastapi)](https://fastapi.tiangolo.com)
-[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react)](https://react.dev)
-[![PyMuPDF](https://img.shields.io/badge/PyMuPDF-1.28.2-orange)](https://pymupdf.readthedocs.io)
-[![MongoDB](https://img.shields.io/badge/MongoDB-6.0-47A248?logo=mongodb)](https://mongodb.com)
+<!-- TODO: add a screenshot -->
+![CADLens](docs/screenshot.png)
 
----
-
-## ✨ What it does
-
-Upload any engineering drawing PDF and CADLens will:
-
-1. **Detect** all dimension annotations, tolerances, surface finish callouts, GD&T feature control frames, and notes
-2. **Number** each one with sequential balloons using **spatial band sorting** (top-to-bottom, left-to-right drawing flow) and **collision-avoidance initial placement**
-3. **Calculate Limits & Classifications** — auto-calculates Upper Limit ($Max$) and Lower Limit ($Min$) from nominal values and tolerances, assigns characteristic designators (*Standard*, *Critical*, *Major*, *Reference*, *Basic*), and maps recommended inspection tools (*Caliper*, *Micrometer*, *CMM*, *Thread Gauge*, etc.)
-4. **Populate** an interactive sidebar with full structured fields — nominal values, tolerances, units, process, datum references, and surface finish
-5. **Export AS9102 Form 3 Excel Reports** — generate audit-ready First Article Inspection sheets for **all balloons** or a **custom selection of balloons**
-6. **Let you edit & interact** — click any balloon to inspect, drag balloons while leader line points stay pinned to the CAD feature, toggle selection checkboxes, and manually add/delete balloons
-
-**Performance:** < 1 second per page on digital CAD PDFs (AutoCAD, SolidWorks, CATIA, Creo). Scanned drawings fall back to a full-page OCR pipeline.
+> **Note:** The file `docs/screenshot.png` does not yet exist. Add a screenshot of the annotate screen here.
 
 ---
 
-## 🏗️ Architecture
+## Problem and Solution
+
+Engineering drawings contain dozens to hundreds of dimensional annotations — tolerances, surface finishes, GD&T callouts, thread specifications — that quality engineers must manually transcribe into First Article Inspection (FAI) reports. This is slow and error-prone.
+
+CADLens reads a PDF, extracts every engineering annotation from the vector text layer (or via OCR for scanned drawings), places numbered balloons on an interactive canvas, computes limits automatically, and exports a formatted AS9102 Form 3 Excel report in one click.
+
+---
+
+## Key Features
+
+- **Hybrid detection:** Reads native vector text from digital CAD PDFs (AutoCAD, SolidWorks, CATIA, Creo) in the primary path; falls back to a full-page Tesseract OCR pipeline for scanned drawings.
+- **Dynamic title block exclusion:** Locates the title block by keyword anchoring and excludes it from annotation detection regardless of drawing template.
+- **Stacked tolerance parsing:** Extracts upper and lower deviations from multi-line stacked tolerance callouts common in ISO standard drawings.
+- **Spatial band numbering:** Numbers balloons in top-to-bottom, left-to-right reading order using 150 px horizontal bands, matching quality inspection conventions.
+- **Collision-free placement:** Scores eight candidate direction vectors for each balloon and applies iterative repulsion physics to separate overlapping circles.
+- **AS9102 Form 3 export:** Generates a formatted `.xlsx` workbook with auto-width columns, alternating row shading, and all FAI-required fields.
+- **Selective export:** Export all balloons or only a checked subset via the sidebar checkboxes.
+- **Interactive canvas:** Drag balloon badges (leader tip stays pinned), drag leader tips, click to inspect, manually add or delete balloons.
+
+---
+
+## Architecture
+
+### Diagram A — System Overview
 
 ```mermaid
 graph TD
-    subgraph Browser["🌐 Browser — localhost:5173"]
-        A1[Upload Screen<br/>drag & drop PDF]
-        A2[Annotate Screen<br/>Drawing Canvas]
-        A3[Balloon List Sidebar<br/>AS9102 inspection editor]
-        A4[Multi-select Toolbar<br/>Export All / Selected]
-        A1 -->|PDF selected| A2
-        A2 <--> A3
-        A3 <--> A4
-    end
+    Browser["Browser — localhost:5173"]
+    Upload["Upload Screen"]
+    Annotate["Annotate Screen\n(DrawingCanvas + BalloonList + Toolbar)"]
 
-    subgraph Backend["⚙️ FastAPI Backend — localhost:8000"]
-        B1["POST /upload<br/>save PDF + hybrid detect"]
-        B2["GET /document/:id/image/:page<br/>serve PNG renders"]
-        B3["POST /balloons — manual add"]
-        B4["PUT /balloons/:id — edit"]
-        B5["DELETE /balloons/:id"]
-        B6["GET /export/:id — all or filtered XLSX"]
-        B7["POST /export/:id/selected — batch export"]
-    end
+    FastAPI["FastAPI Backend — localhost:8000\nmain.py"]
+    Detector["detector.py\nHybrid detection pipeline"]
+    BalloonMgr["balloon_manager.py\nSpatial numbering + placement"]
+    Exporter["exporter.py\nopenpyxl XLSX generator"]
+    MongoDB["MongoDB cadproject\ncollections: documents, balloons"]
+    Storage["storage/\nuploads/ PNG renders\nexports/ XLSX files"]
 
-    subgraph Processing["🔬 Hybrid Detection Pipeline"]
-        C1[PyMuPDF<br/>PDF → PNG renders<br/>+ native vector text]
-        C2{Has native text?}
-        C3[detect_from_pdf_page<br/>vector text extraction<br/>instant · 100% accurate]
-        C4[detect_annotations<br/>OpenCV + Tesseract OCR<br/>for scanned drawings]
-        C5[detector.py<br/>dynamic title block exclusion<br/>classification · field & limit parsing]
-        C6[balloon_manager.py<br/>spatial band sorting<br/>collision-free placement & repulsion]
-        C1 --> C2
-        C2 -->|≥5 native words| C3
-        C2 -->|scanned| C4
-        C3 & C4 --> C5 --> C6
-    end
+    Browser --> Upload
+    Upload -->|"POST /upload multipart/form-data"| FastAPI
+    FastAPI -->|"PyMuPDF render 300 DPI"| Storage
+    FastAPI --> Detector
+    Detector --> BalloonMgr
+    BalloonMgr -->|"balloon dicts"| FastAPI
+    FastAPI -->|"insert_many"| MongoDB
+    FastAPI -->|"JSON response"| Browser
 
-    subgraph DB["🗄️ MongoDB — localhost:27017"]
-        D1[(documents)]
-        D2[(balloons)]
-    end
-
-    A1 -->|multipart/form-data| B1
-    A2 --> B2 & B3 & B4 & B5
-    A4 -->|GET / POST export| B6 & B7
-    B1 --> C1
-    C6 --> D2
-    B1 --> D1
-    B3 & B4 & B5 <--> D2
+    Browser --> Annotate
+    Annotate -->|"GET /document/:id/image/:page"| Storage
+    Annotate -->|"PUT /balloons/:id"| FastAPI
+    Annotate -->|"POST /balloons"| FastAPI
+    Annotate -->|"DELETE /balloons/:id"| FastAPI
+    Annotate -->|"GET/POST /export/:id"| Exporter
+    Exporter --> Storage
+    FastAPI <--> MongoDB
 ```
+
+### Component Responsibilities
+
+| Component | Technology | Responsibility |
+|-----------|------------|----------------|
+| Browser SPA | React 19 + Vite 8 | Upload UI, interactive canvas, inspection sidebar, export controls |
+| `main.py` | FastAPI 0.115 + uvicorn | HTTP routing, upload orchestration, CORS, file serving |
+| `detector.py` | PyMuPDF, OpenCV, Tesseract | Native text extraction, OCR fallback, classification, field parsing |
+| `balloon_manager.py` | Python stdlib | Spatial band sorting, placement scoring, repulsion physics |
+| `exporter.py` | openpyxl 3.1 | AS9102 Form 3 `.xlsx` workbook generation |
+| `database.py` | Motor (async MongoDB) | Async database client, collection handles |
+| `models.py` | Pydantic v2 | Request and response schemas |
+| MongoDB | `mongo:latest` | Persistent storage for documents and balloons |
+| File storage | Local filesystem | Uploaded PDFs, rendered PNGs, generated XLSX files |
 
 ---
 
-## 🔄 Request Flow — PDF Upload & Inspection Generation
+## How It Works
+
+### Diagram B — End-to-End Pipeline
+
+```mermaid
+flowchart TD
+    A["PDF upload\nmain.py POST /upload"] --> B["PyMuPDF open + render\n300 DPI per page\nstore PNG"]
+    B --> C{"page.get_text words\n>= 5 meaningful words?"}
+
+    C -->|"YES — digital CAD PDF"| D["detect_from_pdf_page\ndetector.py"]
+    D --> D1["Group words by block ID\n_has_tolerance_stack check"]
+    D1 --> D2["_detect_title_block_bounds\nkeyword anchors + 65% y threshold"]
+    D2 --> D3["4% border exclusion\nfixed corner backup\n_TITLE_BLOCK_REJECT regex"]
+    D3 --> D4["_classify_text_strict\nrequire_engineering=False"]
+    D4 --> D5["_parse_annotation_fields\n_extract_stacked_tolerances\n_calculate_limits"]
+
+    C -->|"NO — scanned drawing"| E["detect_annotations\ndetector.py OCR path"]
+    E --> E1["cv2.Canny + HoughLinesP\ndimension line detection"]
+    E1 --> E2["_ocr_full_page\nupscale 1.5x + sharpen\nadaptiveThreshold\nTesseract PSM 11"]
+    E2 --> E3["Confidence filter\nhard floor 40\npass 50 or near dim-line"]
+    E3 --> E4["Spatial exclusion\n4% border + 78% title block"]
+    E4 --> E5["_group_tokens\nsame y-row + x-gap 25px"]
+    E5 --> E6["_classify_text_strict\nrequire_engineering=True"]
+    E6 --> E7["_parse_annotation_fields\n_calculate_limits"]
+
+    D5 --> F["_deduplicate\nradius 30px scaled"]
+    E7 --> F
+    F --> G["assign_balloon_numbers\nband sort 150px\n_pick_best_balloon_position"]
+    G --> H["spread_overlapping_balloons\nrepulsion physics 120 iterations\nmin_distance 42px\nfeature clearance 28px"]
+    H --> I["MongoDB insert_many\ndocuments + balloons"]
+    I --> J["JSON response to frontend\ndocument_id + balloons array"]
+    J --> K["DrawingCanvas.jsx\nrender PNG + balloon overlay"]
+    K --> L["BalloonList.jsx\nsidebar inspector"]
+    L --> M["PUT /balloons/:id\nedit fields"]
+    L --> N["GET /export/:id\nPOST /export/:id/selected\nXLSX download"]
+```
+
+### Diagram C — Upload Sequence
 
 ```mermaid
 sequenceDiagram
-    participant U as User (Browser)
-    participant F as FastAPI /upload
-    participant MU as PyMuPDF
-    participant D as detector.py
+    participant U as User
+    participant FE as Frontend App.jsx
+    participant API as FastAPI main.py
+    participant Det as detector.py
     participant BM as balloon_manager.py
-    participant MG as MongoDB
+    participant DB as MongoDB
 
-    U->>F: POST /upload (PDF file)
-    F->>MU: open() + get_pixmap(300dpi) per page
-    MU-->>F: PNG renders + fitz_pages[]
+    U->>FE: Drop PDF onto upload zone
+    FE->>API: POST /upload multipart/form-data
+    API->>API: Save PDF to storage/uploads
+    API->>API: PyMuPDF open + render 300 DPI PNG per page
 
     loop For each page
-        F->>MU: page.get_text('words')
-        alt Digital CAD PDF (≥5 native words)
-            F->>D: detect_from_pdf_page(fitz_page)
-            Note over D: Vector text extraction +<br/>Dynamic title block bounding box exclusion +<br/>Stacked tolerance & limit calculation
-        else Scanned drawing
-            F->>D: detect_annotations(img_bgr)
-            Note over D: Single Tesseract psm11 call.<br/>Filters by confidence + line proximity.
+        API->>API: page.get_text("words")
+        alt >= 5 meaningful words
+            API->>Det: detect_from_pdf_page(fitz_page, dpi_scale)
+            Det->>Det: Group blocks, detect title block, exclude zones
+            Det->>Det: classify + parse + calculate limits
+            Det-->>API: annotations list
+        else scanned drawing
+            API->>Det: detect_annotations(img_bgr)
+            Det->>Det: Canny + HoughLines + OCR full page
+            Det->>Det: filter + group + classify + parse
+            Det-->>API: annotations list
         end
-        D-->>F: annotations[] with structured fields & calculated limits
-        F->>BM: assign_balloon_numbers(spatial band sort) + spread_overlapping
-        BM-->>F: non-colliding balloon dicts[]
+        API->>BM: assign_balloon_numbers(detections, doc_id, page, start_no)
+        BM->>BM: spatial band sort + pick best position
+        BM-->>API: balloon dicts with (x, y, feature_x, feature_y)
+        API->>BM: spread_overlapping_balloons(balloons, min_distance=42)
+        BM->>BM: repulsion iterations + boundary clamp
+        BM-->>API: non-overlapping balloon dicts
     end
 
-    F->>MG: insert document + balloons
-    F-->>U: {document_id, page_count, page_width, page_height, balloons[]}
+    API->>DB: insert_one(document record)
+    API->>DB: insert_many(all_balloons)
+    API->>DB: find(document_id) to fetch saved balloons
+    API-->>FE: {document_id, page_count, page_width, page_height, balloons[]}
+    FE->>FE: setView("annotate"), render DrawingCanvas + BalloonList
 ```
+
+### Stage-by-Stage Explanation
+
+#### 1. PDF Upload and Rendering (`main.py`)
+
+The client POSTs the file as `multipart/form-data`. The backend saves the PDF to `storage/uploads/` with a UUID prefix, then uses `pymupdf` (the `fitz` API) to render each page at 300 DPI (scale factor `300/72 ≈ 4.167`) and save a PNG alongside the PDF. The PIL `Image` object and the `fitz.Page` object are both kept in memory for the per-page detection step.
+
+**Why 300 DPI?** It is the standard resolution for CAD drawing printing and provides enough pixel density for OCR to reliably read fine dimension text.
+
+#### 2. Native vs OCR Path Decision (`main.py`)
+
+`page.get_text('words')` retrieves PyMuPDF's word list. If five or more non-whitespace words exist, the page contains embedded vector text — the native path is used. Otherwise the OCR path runs. The threshold of 5 is configured as `MIN_NATIVE_WORDS = 5` in `detector.py`.
+
+**Why prefer native extraction?** Embedded vector text has pixel-perfect coordinates and no OCR errors. The OCR path is slower and can produce false positives from dimension lines and hatching patterns.
+
+#### 3. Native Text Extraction (`detector.py: detect_from_pdf_page`)
+
+Words are fetched as `(x0, y0, x1, y1, text, block_no, line_no, word_no)` tuples and grouped by block ID. Each block is checked against:
+- 4% border exclusion (grid zone left/right/top/bottom)
+- Dynamic title block bounding box from `_detect_title_block_bounds`
+- Fixed corner backup check (x > 65%, y > 76% of page)
+- `_TITLE_BLOCK_REJECT` regex
+
+If a block has stacked lines AND contains a tolerance pattern or dimension text within 45 PDF points height, it is emitted as a single merged balloon (stacked tolerance handling). Otherwise each line within the block is classified individually.
+
+Coordinates in PDF points are multiplied by `dpi_scale` to convert to image pixel coordinates.
+
+#### 4. Dynamic Title Block Detection (`detector.py: _detect_title_block_bounds`)
+
+Scans all words for anchor keywords (`drawn`, `checked`, `approved`, `material`, `scale`, `sheet`, `rev`, etc.) appearing in the lower 35% of the page (y > 65% of page height) and to the right of 30% of page width. If two or more anchors are found, their bounding box (with padding) becomes the excluded title block region.
+
+**Why dynamic detection?** Different CAD drafting templates place title blocks at varying heights. A fixed percentage cutoff fails on compact or non-standard templates.
+
+#### 5. Stacked Tolerance Parsing (`detector.py: _extract_stacked_tolerances`)
+
+CAD drawings routinely show bilateral tolerances as a vertical stack:
+```
++0.039
+39 H8
+0.000
+```
+
+`_has_tolerance_stack` returns `True` if a block spans more than one line and contains a decimal-looking token. `_extract_stacked_tolerances` clusters words into rows by y-centre proximity (≤ 4 PDF points), then looks for a row with an explicit `+` sign (upper deviation) and a following row with a plain decimal (lower deviation, assumed negative).
+
+#### 6. OCR Fallback Path (`detector.py: detect_annotations / _detect_ocr_impl`)
+
+For scanned drawings:
+1. Grayscale conversion.
+2. Canny edge detection + `HoughLinesP` to locate dimension lines (used later for proximity scoring).
+3. `_ocr_full_page`: upscale 1.5x with `INTER_CUBIC`, sharpen with a Laplacian kernel, `adaptiveThreshold` (Gaussian 31×31, constant 5), then a single `pytesseract.image_to_data` call with `--psm 11 --oem 3`.
+4. Each token is filtered: hard floor `conf >= 40`, pass floor `conf >= 50` or (`conf >= 40` and within 60 px of a dimension line). Coordinates are scaled back to original image space.
+5. `_group_tokens` joins adjacent tokens on the same line (y-centre within 10 px, x-gap ≤ 25 px) into a single annotation.
+6. OCR text corrections are applied (`_correct_ocr_text`): `O50` → `Ø50`, `+/-` → `±`, trailing `o` → `°`.
+7. Classification with `require_engineering=True` (standalone integers rejected since they may be grid references).
+
+**Why a single full-page OCR call?** The v1 approach ran one Tesseract process per contour, spawning 500+ OS processes per page and taking 31 seconds. A single call with PSM 11 (sparse text) covers the entire page in one pass.
+
+#### 7. Classification (`detector.py: _classify_text_strict`)
+
+Applied to every candidate text string:
+- Single letter → `None` (section/datum marker)
+- Single digit → `None` (border grid reference) unless `require_engineering=False`
+- Section/view label (`VIEW C`, `SECTION A-A`) → `None`
+- Common English words → `None`
+- Punctuation only → `None`
+- `_TITLE_BLOCK_REJECT` match → `None`
+- `_SURFACE_FINISH` match (`Ra`, `Rz`, `Rt`, `Rq`) → `Surface Finish`
+- GD&T Unicode symbol or `0.xx LETTER` pattern → `GD&T`
+- `±`, `+x/y`, leading decimal → `Tolerance`
+- `_DIM_PATTERNS` match → `Dimension`
+- Standalone integer (native path only) → `Dimension`
+- 3+ meaningful characters → `Note`
+
+#### 8. Field Parsing (`detector.py: _parse_annotation_fields`)
+
+Extracts structured fields from the annotation text using targeted regular expressions:
+
+| Field | Rule |
+|-------|------|
+| `nominal_value` | Diameter, radius, thread, chamfer, or plain numeric extraction |
+| `tolerance_upper` / `tolerance_lower` | Bilateral `+x/-y`, symmetric `±x`, or stacked extraction |
+| `upper_limit` / `lower_limit` | `nominal + tolerance` via `_calculate_limits`; or explicit limit pair `x.xxx - y.yyy` |
+| `surface_finish` | `Ra`/`Rz`/`Rt`/`Rq` + value |
+| `tolerance_zone` | ISO fit code (e.g. `H8`) or GD&T zone |
+| `datum_ref` | Letter or compound datum from GD&T pattern |
+| `quantity` | `4X`, `2 HOLES`, `62 Nos.` |
+| `char_designator` | Reference `(x)`, Basic `[x]`, Critical (fit code or `KEY`/`CRITICAL`), Major (`±0.0x`), Standard (default) |
+| `inspection_tool` | Rule-based selection from thread, diameter, radius, angle, GD&T, type |
+| `process` | `CHAMFER`, `THREAD` inferred from text pattern |
+
+**Limit formula:** `upper_limit = nominal + upper_tolerance`, `lower_limit = nominal + lower_tolerance`. The lower tolerance is stored as a negative value (e.g. `-0.000`), so `lower_limit = nominal - |lower_tolerance|`.
+
+#### 9. Deduplication (`detector.py: _deduplicate`)
+
+Simple O(n²) check: if a new annotation falls within `DEDUP_RADIUS` (30 px, scaled by `dpi_scale`) of an already-kept annotation, it is discarded. The first occurrence (from block order) is preferred.
+
+#### 10. Spatial Band Sorting (`balloon_manager.py: assign_balloon_numbers`)
+
+Annotations are sorted by `(round(feature_y / 150) * 150, feature_x)`: the y-coordinate is quantized into 150 px bands (rounded to the nearest band centre), then sorted left-to-right within each band. This produces the top-to-bottom, left-to-right reading order expected by quality inspectors.
+
+#### 11. Initial Placement (`balloon_manager.py: _pick_best_balloon_position`)
+
+Eight candidate direction vectors are scored. The score (penalty) increases for proximity to already-placed balloons (penalty 15 × overlap beyond 45 px) and for proximity to canvas margins (penalty 10 × overshoot). North-East diagonal (dx=65, dy=-55) is preferred (penalty +0); North-West second (+5); all other directions (+15).
+
+#### 12. Overlap Repulsion (`balloon_manager.py: spread_overlapping_balloons`)
+
+Iterative physics simulation (up to 120 iterations):
+1. Repel balloon from its own feature point if `dist < 28 px` (prevents covering dimension text).
+2. Pairwise balloon repulsion: if `dist < min_distance (42 px)`, push both apart by `overlap/2` along the separation vector.
+3. Clamp to canvas bounds with 35 px margin.
+
+Stops early if no balloon moved in an iteration.
+
+#### 13. Persistence and Response (`main.py`)
+
+Document record (filename, path, page count) is inserted into the `documents` collection. All balloon dicts are assigned `ObjectId` values and batch-inserted into the `balloons` collection. The endpoint then re-fetches them from MongoDB to serialize and return as the JSON response body.
+
+#### 14. Canvas Display (`DrawingCanvas.jsx`)
+
+The PNG served from `GET /document/:id/image/:page` is displayed as an `<img>` element. An HTML5 `<canvas>` is positioned absolutely on top of it at the same dimensions. Balloon coordinates are in image pixel space; they are multiplied by the current zoom factor for rendering. The effective balloon radius scales as `max(13, round(14 * sqrt(max(0.25, zoom))))`.
+
+#### 15. Edit and Export
+
+- Clicking any detail field in `BalloonList.jsx` triggers a `PUT /balloons/:id` on blur or Enter.
+- Export All triggers `GET /export/:id`; Export Selected triggers `POST /export/:id/selected` with the array of checked IDs.
+- `exporter.py` builds the workbook, writes it to `storage/exports/`, and the endpoint returns it as a `FileResponse`.
 
 ---
 
-## 📂 Project Structure
+## Annotation Types and Classification Rules
 
-```
-CADLens/
-│
-├── .gitignore                      # Excludes node_modules, venv, uploads, exports, *.pt
-├── README.md                       # Main documentation (this file)
-│
-├── backend/                        # Unified FastAPI Python service
-│   ├── main.py                     # All HTTP routes + hybrid detection orchestration + selective export
-│   ├── detector.py                 # Hybrid pipeline: native PDF extraction, dynamic title block detection, limits
-│   ├── balloon_manager.py          # Spatial band sorting, clear vector placement, overlap repulsion physics
-│   ├── exporter.py                 # openpyxl AS9102 Form 3 / FAI Excel generator (styled, auto-width columns)
-│   ├── database.py                 # Motor async MongoDB client
-│   ├── models.py                   # Pydantic request/response schemas (AS9102 fields, limits, tools)
-│   ├── requirements.txt            # Python dependencies (pinned)
-│   └── storage/
-│       ├── uploads/                # Saved PDFs + rendered page PNGs (git-ignored)
-│       └── exports/                # Generated .xlsx files (git-ignored)
-│
-├── frontend/                       # React + Vite SPA
-│   ├── index.html
-│   ├── vite.config.js
-│   ├── package.json
-│   ├── README.md                   # Frontend architecture & component documentation
-│   ├── .env.example                # → copy to .env, set VITE_API_URL
-│   └── src/
-│       ├── main.jsx                # React entry point
-│       ├── api.js                  # Centralized API base URL (import.meta.env.VITE_API_URL)
-│       ├── App.jsx                 # Root state machine — multi-select, upload → annotate views
-│       ├── App.css                 # Glassmorphism dark-mode design system & AS9102 styling
-│       └── components/
-│           ├── DrawingCanvas.jsx   # Canvas overlay — balloons, pinned leader lines, drag support
-│           ├── BalloonList.jsx     # Sidebar — AS9102 field editor, designator, inspection tools, batch select
-│           └── Toolbar.jsx         # Zoom, mode toggle, export all / selected, batch actions
-│
-└── processing-service/             # Legacy standalone FastAPI (superseded, kept for reference)
-```
+| Type | Example Text | Detection Rule | Fields Auto-Populated |
+|------|-------------|----------------|----------------------|
+| Dimension | `39.5`, `Ø50`, `R12`, `M10x1.5`, `H8`, `1x45°`, `4X Ø12` | Engineering prefix/suffix: Ø, R, M, H, °, mm, decimal, fit code | Nominal, upper/lower tolerance, limits, units, quantity, process |
+| Tolerance | `±0.05`, `+0.039/-0.000`, `0.150` | `±` symbol, bilateral `+x/-y`, or leading decimal `0.xxx` | Upper limit, lower limit, tolerance zone, units |
+| Surface Finish | `Ra 1.6`, `Rz 6.3` | `Ra`, `Rz`, `Rt`, or `Rq` keyword | Surface finish value, nominal, units (µm) |
+| GD&T | `⊙ 0.05 A`, `⊥ 0.1 A-B` | GD&T Unicode symbols or `0.xx LETTER` pattern | Datum reference, tolerance zone, units |
+| Note | `42CrMo4`, `62 Nos.`, `4X` | 3+ meaningful characters not matching the above | Quantity, material, description |
+
+**Deliberately excluded:**
+- Single letters (`A`, `B`) — section or datum markers
+- Single digits (`1`–`9`) — drawing border grid references
+- Title block content — detected via keyword anchoring and regex
+- Section labels — `VIEW C`, `SECTION A-A`
 
 ---
 
-## ⚙️ Detection Pipeline
+## Calculated Fields
+
+**Upper Limit (Max):** `nominal_value + upper_tolerance`
+
+**Lower Limit (Min):** `nominal_value + lower_tolerance`
+
+Both values are rounded to 4 decimal places. The lower tolerance is stored as a signed negative number so the formula works uniformly. If either tolerance is missing, limits are left blank.
+
+**Characteristic Designator rules:**
+
+| Designator | Trigger condition |
+|------------|------------------|
+| Reference | Text wrapped in `(…)` or contains `REF` |
+| Basic | Text wrapped in `[…]` or contains `BASIC` |
+| Critical | ISO fit code present (`H8`, `g6`, etc.) or text contains `CRITICAL` or `KEY` |
+| Major | Tight tolerance: text contains `±0.0` or `+0.0` |
+| Standard | None of the above (default) |
+
+**Inspection tool rules (priority order):**
+
+| Condition | Suggested Tool |
+|-----------|---------------|
+| `Ra` or `Rz` in text, or type = Surface Finish | Surface Roughness Tester (Profilometer) |
+| `Rc`, `M\d`, `UNC`, `UNF` in text | Thread Plug / Ring Gauge |
+| `Ø` or `DIA` in text | Bore Gauge / Outside Micrometer |
+| `R` or `SR` in text | Radius Gauge / Optical Comparator |
+| `°` or `DEG` in text | Bevel Protractor / Optical Comparator |
+| type = GD&T, or `⌖⊥∥∠` in text | CMM / Dial Indicator |
+| type = Tolerance | Digital Micrometer / Height Gauge |
+| type = Note | Visual Inspection |
+| default | Digital Vernier Caliper / Height Gauge |
+
+---
+
+## Data Model
+
+### Diagram D — Entity Relationship
 
 ```mermaid
-flowchart LR
-    PDF[PDF File] --> MU[PyMuPDF\nrender 300 DPI]
-    MU --> CHK{Native words\n≥ 5?}
-
-    CHK -->|YES\ndigital CAD PDF| VEC[detect_from_pdf_page\npage.get_text words]
-    VEC --> EXCL1[Dynamic Title Block Detection\nKeyword Anchors + 4% Border]
-    EXCL1 --> CLS1[Strict Classification\n_DIM_PATTERNS regex\nengineering only]
-
-    CHK -->|NO\nscanned drawing| GR[Grayscale]
-    GR --> EDGES[Canny + HoughLinesP\ndimension lines]
-    GR --> UP[Upscale 1.5×\nINTER_CUBIC]
-    UP --> SHARP[Laplacian Sharpen]
-    SHARP --> THRESH[adaptiveThreshold\nGaussian 31×31]
-    THRESH --> TESS[Tesseract OCR\nPSM 11 — single call]
-    TESS --> FILT[Token Filtering\nconf ≥ 40 hard floor\nconf ≥ 50 or near dim-line]
-    FILT --> EXCL2[Spatial Exclusion\n4% border + title block]
-    EXCL2 --> GROUP[Token Grouping\nsame line · x-gap ≤ 25px]
-    GROUP --> CLS1
-
-    CLS1 --> PARSE[_parse_annotation_fields\nnominal · tolerances · limits\nsurface finish · datum · tool]
-    PARSE --> DEDUP[Deduplication\nradius 30px]
-    DEDUP --> SORT[Spatial Band Sorting\ntop-to-bottom · left-to-right]
-    SORT --> PLACE[Clear Vector Placement\nprefer clear diagonal vectors]
-    PLACE --> REPEL[Overlap Repulsion\nspring physics & margin clamp]
-    REPEL --> MONGO[(MongoDB)]
-
-    EDGES --> FILT
+erDiagram
+    DOCUMENTS {
+        ObjectId _id PK
+        string doc_id
+        string filename
+        string file_path
+        datetime upload_time
+        int page_count
+    }
+    BALLOONS {
+        ObjectId _id PK
+        string document_id FK
+        int balloon_no
+        string text
+        string type
+        float x
+        float y
+        float feature_x
+        float feature_y
+        int page
+        string nominal_value
+        string units
+        string tolerance_upper
+        string tolerance_lower
+        string upper_limit
+        string lower_limit
+        string char_designator
+        string inspection_tool
+        string surface_finish
+        string process
+        string datum_ref
+        string tolerance_zone
+        string quantity
+        string material
+        string description
+        string remarks
+    }
+    DOCUMENTS ||--o{ BALLOONS : "doc_id = document_id"
 ```
 
+### Balloon Field Reference
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `document_id` | string | UUID of parent document |
+| `balloon_no` | int | Sequential display number (spatial order) |
+| `text` | string | Raw annotation text from drawing |
+| `type` | string | `Dimension`, `Tolerance`, `Surface Finish`, `GD&T`, `Note`, `balloon` |
+| `x` | float | Balloon badge centre x, image pixels |
+| `y` | float | Balloon badge centre y, image pixels |
+| `feature_x` | float | Leader tip x (pinned to CAD feature), image pixels |
+| `feature_y` | float | Leader tip y (pinned to CAD feature), image pixels |
+| `page` | int | 1-based page number within the document |
+| `nominal_value` | string | Parsed nominal dimension |
+| `units` | string | `mm`, `°`, `µm`, `in`, or empty |
+| `tolerance_upper` | string | Upper deviation, e.g. `+0.039` |
+| `tolerance_lower` | string | Lower deviation, e.g. `-0.000` |
+| `upper_limit` | string | Computed Max limit |
+| `lower_limit` | string | Computed Min limit |
+| `char_designator` | string | `Standard`, `Critical`, `Major`, `Reference`, `Basic` |
+| `inspection_tool` | string | Suggested measurement method |
+| `surface_finish` | string | e.g. `Ra 1.6` |
+| `process` | string | e.g. `CHAMFER`, `THREAD` |
+| `datum_ref` | string | GD&T datum reference letters |
+| `tolerance_zone` | string | ISO fit code or GD&T zone value |
+| `quantity` | string | Multiplier or count, e.g. `4` |
+| `material` | string | Material callout from Note annotations |
+| `description` | string | Free-text description |
+| `remarks` | string | Inspector remarks |
+
 ---
 
-## 📋 Prerequisites
+## Tech Stack
 
-| Tool | Version | Install |
-|------|---------|---------|
-| Node.js | ≥ 18 | [nodejs.org](https://nodejs.org) |
-| Python | 3.9 – 3.12 | [python.org](https://python.org) |
-| MongoDB Community | ≥ 6.0 | `brew install mongodb-community` (macOS) or Windows Service |
-| Tesseract OCR | any | `brew install tesseract` *(only needed for scanned drawings)* |
-| PyMuPDF | 1.28.2 | installed via `pip install -r requirements.txt` |
-
-> **Note:** Poppler is no longer required — PDF rendering is done entirely by PyMuPDF.
+| Layer | Technology | Version | Purpose |
+|-------|------------|---------|---------|
+| Frontend framework | React | 19 | SPA component tree |
+| Frontend build | Vite | 8 | Dev server, HMR, production bundle |
+| HTTP client | Axios | 1.15 | API calls from React |
+| Icons | Lucide React | 1.14 | UI icons |
+| Backend framework | FastAPI | 0.115 | Async HTTP API |
+| ASGI server | uvicorn | 0.34 | Production ASGI runner |
+| PDF handling | PyMuPDF | 1.28.2 | PDF rendering + vector text extraction |
+| Computer vision | OpenCV | 4.11 | Edge detection, line finding, contour filtering |
+| OCR | Tesseract + pytesseract | system | Fallback text recognition for scanned drawings |
+| Image I/O | Pillow | 11.2 | PIL image loading |
+| Data validation | Pydantic | 2.11 | Request/response schemas |
+| Database driver | Motor | 3.7 | Async MongoDB driver |
+| Database | MongoDB | latest | Document store |
+| Excel export | openpyxl | 3.1 | XLSX workbook generation |
+| YOLO (optional) | ultralytics | 8.3 | Pre-drawn balloon detection (requires model file) |
+| Containerization | Docker + Compose | — | Three-service orchestration |
 
 ---
 
-## 🚀 Running Locally
+## Quick Start
 
-You need **3 services** running simultaneously.
+### Option A — Docker Compose (Recommended)
 
-### Terminal 1 — MongoDB
+```bash
+git clone https://github.com/vidhan13i/CADLens.git
+cd CADLens
+docker compose up --build
+```
 
-- **macOS / Linux:**
-  ```bash
-  brew services start mongodb-community
-  ```
-- **Windows:**
-  Start the MongoDB Windows Service or run:
-  ```powershell
-  mongod --dbpath "C:\data\db"
-  ```
+| Service | URL |
+|---------|-----|
+| Frontend | http://localhost:5173 |
+| Backend API | http://localhost:8000 |
+| Swagger docs | http://localhost:8000/docs |
+| MongoDB | localhost:27017 |
 
-### Terminal 2 — FastAPI Backend
+> **Note:** The backend Dockerfile installs `poppler-utils` even though PyMuPDF handles PDF rendering without Poppler. This is a known inconsistency and can be removed from the Dockerfile without impact. See [Known Limitations](#known-limitations).
+
+### Option B — Manual Setup (Three Terminals)
+
+**Prerequisites:**
+
+| Tool | Version | Notes |
+|------|---------|-------|
+| Python | 3.9 – 3.12 | 3.11 recommended (matches Dockerfile) |
+| Node.js | ≥ 18 | |
+| MongoDB Community | ≥ 6.0 | Running locally on port 27017 |
+| Tesseract OCR | any | Required only for scanned drawings |
+
+**Terminal 1 — MongoDB:**
+
+```bash
+# macOS
+brew services start mongodb-community
+
+# Windows
+mongod --dbpath "C:\data\db"
+```
+
+**Terminal 2 — Backend:**
 
 ```bash
 cd backend
@@ -226,181 +491,217 @@ pip install -r requirements.txt
 uvicorn main:app --port 8000 --reload
 ```
 
-- Backend is live at → **http://localhost:8000**
-- Interactive Swagger docs → **http://localhost:8000/docs**
-
-### Terminal 3 — React Frontend
+**Terminal 3 — Frontend:**
 
 ```bash
 cd frontend
-cp .env.example .env          # first time only
-npm install                   # first time only
+cp .env.example .env    # first time only
+npm install             # first time only
 npm run dev
 ```
 
-- Frontend is live at → **http://localhost:5173**
+---
+
+## Environment Variables
+
+| Variable | Default | Set In | Purpose |
+|----------|---------|--------|---------|
+| `MONGODB_URL` | `mongodb://localhost:27017` | Backend env / Docker Compose | MongoDB connection string |
+| `VITE_API_URL` | `http://localhost:8000` | `frontend/.env` | API base URL for the React app |
+
+The database name is hardcoded in `database.py` as `cadproject`. There is no environment variable to override it.
 
 ---
 
-## 🔌 API Reference
+## API Reference
+
+For full endpoint documentation including example request/response bodies, see [backend/README.md](backend/README.md#endpoints).
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `POST` | `/upload` | Upload a PDF — runs full hybrid detection pipeline and spatial ballooning |
-| `GET` | `/document/{id}` | Fetch document metadata + all balloons |
-| `GET` | `/document/{id}/image/{page}` | Serve rendered PNG for a page |
-| `POST` | `/balloons` | Manually create a balloon at a canvas position with AS9102 inspection fields |
-| `PUT` | `/balloons/{id}` | Update balloon position, text, tolerances, limits, classification, inspection tool, etc. |
+| `POST` | `/upload` | Upload a PDF — renders all pages, runs hybrid detection, returns all balloons |
+| `GET` | `/document/{id}` | Fetch document metadata and all its balloons |
+| `GET` | `/document/{id}/image/{page}` | Serve the rendered PNG for a given page |
+| `POST` | `/balloons` | Manually create a balloon at a click position |
+| `PUT` | `/balloons/{id}` | Update any balloon field (position, text, tolerances, etc.) |
 | `DELETE` | `/balloons/{id}` | Delete a balloon |
-| `GET` | `/export/{id}` | Download AS9102 Form 3 Excel report (supports `?balloon_ids=id1,id2` for selective export) |
-| `POST` | `/export/{id}/selected` | Export specifically selected balloon IDs via JSON body `{ balloon_ids: [...] }` |
-| `POST` | `/detect-existing-balloons` | Re-run YOLO / HoughCircles on stored page images |
+| `GET` | `/export/{id}` | Download XLSX for all balloons; supports `?balloon_ids=id1,id2` for a subset |
+| `POST` | `/export/{id}/selected` | Download XLSX for a JSON-specified list of balloon IDs |
+| `POST` | `/detect-existing-balloons` | Re-run YOLO / OpenCV circle detection on stored page images |
 
 ---
 
-## 🧠 Annotation Types & Classification
+## Excel Export Format
 
-| Type | Example text | Detection rule | Auto-Populated Inspection Fields |
-|------|-------------|----------------|----------------------------------|
-| **Dimension** | `39.5`, `Ø50`, `R12`, `M10x1.5`, `H8`, `45°` | Engineering prefix/suffix — Ø, R, M, H, °, mm, or decimal | Nominal value, upper/lower tolerances, limits, units |
-| **Tolerance** | `±0.05`, `+0.039/-0.000`, `0.150` | ± symbol, leading decimal, +x/−y pair | Upper limit ($Max$), lower limit ($Min$) |
-| **Surface Finish** | `Ra 1.6`, `Rz 6.3` | Ra / Rz / Rq / Rt keyword | Surface finish value, process |
-| **GD&T** | `⊙ 0.05 A`, `⊥ 0.1 A-B` | GD&T Unicode symbols or `0.xx LETTER` pattern | Datum references, tolerance zone |
-| **Note** | `42CrMo4`, `62 Nos.`, `4X` | 3+ meaningful chars not matching the above | Quantity, material description |
+The exported `.xlsx` workbook contains a single sheet titled **Characteristic Inspection** with the following columns in order:
 
-**Deliberately rejected** (not ballooned):
-- Single letters (`A`, `B`, `C`) — section/datum markers
-- Single digits (`1`–`9`) — border grid references
-- Title block keywords (`DRAWN BY`, `MATERIAL`, `CUSTOMER`, `ALL DIMENSIONS`, …) via dynamic title block bounding box detection
-- Section labels (`VIEW C`, `SECTION A-A`)
+| Column | Source field |
+|--------|-------------|
+| Balloon No. | `balloon_no` |
+| Drawing Reference / Text | `text` |
+| Type | `type` |
+| Nominal Value | `nominal_value` |
+| Upper Tolerance | `tolerance_upper` |
+| Lower Tolerance | `tolerance_lower` |
+| Upper Limit (Max) | `upper_limit` |
+| Lower Limit (Min) | `lower_limit` |
+| Units | `units` |
+| Quantity | `quantity` |
+| Classification / Designator | `char_designator` |
+| Inspection Tool / Method | `inspection_tool` |
+| Surface Finish | `surface_finish` |
+| Process | `process` |
+| Datum Ref | `datum_ref` |
+| Tolerance Zone | `tolerance_zone` |
+| Material | `material` |
+| Page No. | `page` |
+| Remarks | `remarks` |
 
----
-
-## 📤 AS9102 Form 3 / FAI Excel Export Format
-
-Each exported `.xlsx` workbook follows the **AS9102 Form 3 Characteristic Accountability** standard with auto-calculated columns:
-
-| Balloon No. | Drawing Reference / Text | Type | Nominal Value | Upper Tolerance | Lower Tolerance | Upper Limit (Max) | Lower Limit (Min) | Units | Quantity | Classification / Designator | Inspection Tool / Method | Surface Finish | Process | Datum Ref | Tolerance Zone | Material | Page No. | Remarks |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-
-- **Formatted Headers:** Navy fill with white Calibri Bold text (height: 32pt)
-- **Alternating Shading:** Zebra rows (`#EFF6FF`) for effortless reading
-- **Active Gridlines:** Gridlines enabled by default for audit reviews
-- **Calculated Limits:** Max and Min limits automatically computed from nominal and bilateral/unilateral tolerances
-- **Selective Exporting:** Export all drawing balloons or only the checked subset from the UI
+**Formatting:** Navy (`1E40AF`) header fill, white Calibri Bold 11pt, centre-aligned, 32pt row height. Alternating data rows use a light blue fill (`EFF6FF`). Column widths are auto-sized to content, clamped between 12 and 40 characters. Gridlines are enabled. Rows are sorted by page then balloon number.
 
 ---
 
-## 🖱️ Using the Canvas & Sidebar
+## Using the App
 
-| Action | How |
-|--------|-----|
-| **Auto-detect** | Upload a PDF — balloons appear automatically with non-colliding layout |
-| **Inspect Balloon** | Click any balloon circle on canvas → automatically highlights, scrolls, and expands its details in the sidebar |
-| **Select Row** | Click any sidebar row → highlights the corresponding balloon on the canvas |
-| **Multi-Select & Filter** | Check individual balloon checkboxes or use "Select All" to target specific characteristics for export |
-| **Edit AS9102 Fields** | Expand a balloon row → edit nominals, upper/lower tolerances, limits, classification (*Standard*, *Critical*, *Major*, *Reference*, *Basic*), or assign inspection tools (*Caliper*, *Micrometer*, *CMM*, *Thread Gauge*, etc.) |
-| **Move balloon** | Click and drag any balloon circle — leader line remains pinned to the measured CAD feature |
-| **Move leader endpoint** | Select a balloon, then drag the yellow feature dot to point to a new CAD feature |
-| **Add balloon** | Switch to **Manual** mode (toolbar), click on the drawing |
-| **Delete balloon** | Click the trash icon → confirm in the styled dialog |
-| **Export All / Selected** | Click **Export XLSX** to download all characteristics or **Export Selected** for the marked subset |
-
----
-
-## 🛠️ Troubleshooting
-
-| Problem | Fix |
-|---------|-----|
-| **0 balloons detected** | Check backend logs — if `native PDF extraction` appears, the drawing has vector text. If `OCR fallback` appears, ensure `tesseract --version` works. |
-| **Upload failed / CORS error** | Ensure the backend is running on port 8000 and MongoDB is started |
-| **PDF conversion failed** | PyMuPDF handles this now — run `pip install PyMuPDF==1.28.2` |
-| **MongoDB connection refused** | Run `brew services start mongodb-community` (macOS) or ensure the `mongod` service is running (Windows) |
-| **YOLO not loading** | `balloon_detector.pt` not found — system auto-falls back to OpenCV HoughCircles |
-| **Balloons placed in title block** | The dynamic title block detector automatically identifies title blocks via keywords. You can also adjust `TITLE_BLOCK_FRAC` in `detector.py` if your drawing has an unusual layout. |
-| **Sidebar fields empty** | After re-uploading with the new code, fields auto-populate. Old documents in MongoDB predate structured parsing — delete and re-upload. |
+1. Open http://localhost:5173 and drop a PDF onto the upload zone (or click to browse).
+2. Wait for the processing spinner — the backend renders the PDF, runs detection, and returns balloons.
+3. The annotate screen opens with the drawing and all detected balloons numbered and placed.
+4. **Inspect a balloon:** Click any numbered circle on the canvas or any row in the sidebar — both sides synchronize.
+5. **Edit fields:** Expand a sidebar row and edit any field. Changes are saved on blur or Enter.
+6. **Move a balloon badge:** Click-drag the circle. The leader line tip stays pinned to the CAD feature.
+7. **Move a leader tip:** Select a balloon (click it), then drag the blue dot at the leader tip.
+8. **Multi-select for export:** Check individual sidebar checkboxes or use **Select All**. Shift-click a balloon on the canvas to toggle its selection.
+9. **Export:** Click **Export All** (toolbar) for all balloons, or **Export Selected** for the checked subset.
+10. **Add balloon manually:** Switch to **Manual** mode in the toolbar, then click the drawing. A new balloon is placed and immediately selected.
+11. **Delete a balloon:** Click the trash icon in the sidebar row and confirm in the dialog.
+12. **New drawing:** Click **New PDF** in the toolbar to return to the upload screen.
 
 ---
 
-## 🗂️ Git Setup
+## Project Structure
 
-```bash
-# Clone
-git clone https://github.com/vidhan13i/CADLens.git
-cd CADLens
-
-# Backend
-cd backend && pip install -r requirements.txt
-
-# Frontend
-cd ../frontend && cp .env.example .env && npm install
+```
+CADLens/
+├── README.md                        # This file
+├── CHANGELOG.md                     # Version history
+├── docker-compose.yml               # Three-service Docker orchestration
+│
+├── backend/                         # Active — FastAPI Python service
+│   ├── main.py                      # All HTTP routes + upload orchestration
+│   ├── detector.py                  # Hybrid detection pipeline (primary + OCR)
+│   ├── balloon_manager.py           # Spatial sorting, placement, repulsion
+│   ├── exporter.py                  # openpyxl XLSX generator
+│   ├── database.py                  # Motor async MongoDB client
+│   ├── models.py                    # Pydantic schemas
+│   ├── requirements.txt             # Pinned Python dependencies
+│   ├── Dockerfile                   # Python 3.11-slim + Tesseract
+│   └── storage/
+│       ├── uploads/                 # Saved PDFs + rendered PNGs (git-ignored)
+│       └── exports/                 # Generated XLSX files (git-ignored)
+│   │
+│   └── src/                         # LEGACY — Node.js/Express skeleton (unused)
+│       ├── server.js                # Express server on port 5000
+│       ├── app.js                   # Express app with /api/balloons, /api/upload routes
+│       ├── config/db.js             # Mongoose connection
+│       ├── controllers/             # balloonController.js (empty), exportController.js, uploadController.js
+│       ├── models/Balloon.js        # Mongoose schema (minimal fields only)
+│       ├── routes/                  # balloonRoutes.js, uploadRoutes.js, exportRoutes.js
+│       └── services/                # excelService.js, pdfService.js, processingService.js
+│
+├── frontend/                        # Active — React 19 + Vite 8 SPA
+│   ├── index.html
+│   ├── vite.config.js
+│   ├── package.json
+│   ├── Dockerfile                   # node:20-alpine, runs npm run dev --host
+│   ├── .env.example                 # Copy to .env, set VITE_API_URL
+│   └── src/
+│       ├── main.jsx                 # React entry point
+│       ├── api.js                   # API base URL constant
+│       ├── App.jsx                  # Root component — state machine, upload + annotate views
+│       ├── App.css                  # Glassmorphism dark-mode design system
+│       ├── components/
+│       │   ├── DrawingCanvas.jsx    # HTML5 canvas overlay, zoom, drag, hit testing
+│       │   ├── BalloonList.jsx      # Sidebar — AS9102 field editor, multi-select
+│       │   ├── Toolbar.jsx          # Zoom controls, mode toggle, export buttons
+│       │   ├── BalloonLayer.jsx     # LEGACY — simple div-based balloon layer (unused)
+│       │   ├── BalloonEditor.jsx    # LEGACY — simple YOLO-result editor panel (unused)
+│       │   └── PDFViewer.jsx        # LEGACY — react-pdf based viewer (unused)
+│       └── pages/
+│           ├── AboutPage.jsx        # LEGACY — static about page (unused)
+│           └── UploadPage.jsx       # LEGACY — upload page calling Node backend (unused)
+│
+└── processing-service/              # LEGACY — standalone FastAPI service (superseded)
+    ├── main.py                      # POST /process endpoint, YOLO + OpenCV circle detection
+    ├── requirements.txt             # Unpinned dependencies
+    ├── train_yolo.py                # YOLOv8 training script stub
+    └── app/
+        ├── api/routes.py            # Empty
+        ├── cv/detector.py           # Empty
+        ├── ocr/tesseract_engine.py  # Empty
+        └── pipeline/balloon_pipeline.py  # Empty
 ```
 
-Files automatically excluded by `.gitignore`:
-- `node_modules/`, `venv/`, `__pycache__/`
-- `backend/storage/uploads/` — uploaded PDFs + rendered PNGs
-- `backend/storage/exports/` — generated Excel files
-- `*.pt`, `*.onnx` — YOLO model weights (download separately)
-- `.env` — local environment variables (copy from `.env.example`)
-- `.DS_Store`
+**Active code:** `backend/main.py`, `backend/detector.py`, `backend/balloon_manager.py`, `backend/exporter.py`, `backend/database.py`, `backend/models.py`, all of `frontend/src/` except the files marked legacy above.
+
+**Legacy / unused:** `backend/src/` (Node.js skeleton), `frontend/src/components/BalloonLayer.jsx`, `frontend/src/components/BalloonEditor.jsx`, `frontend/src/components/PDFViewer.jsx`, `frontend/src/pages/AboutPage.jsx`, `frontend/src/pages/UploadPage.jsx`, `processing-service/` (whole directory).
 
 ---
 
-## 📈 Changelog
+## Known Limitations
 
-### v2.2 — AS9102 Form 3 (FAI) Compliance, Spatial Numbering & Selective Export *(Latest)*
+1. **Balloon drag positions are not persisted.** `BalloonUpdate` in `models.py` does not declare `x`, `y`, `feature_x`, or `feature_y` fields. Pydantic v2 silently ignores extra fields, so when `DrawingCanvas.jsx` sends a drag position to `PUT /balloons/:id`, those coordinates are dropped and the new position is never saved to MongoDB. On page reload, balloons revert to their original positions. The fix is to add these four `Optional[float]` fields to `BalloonUpdate`.
 
-| Feature / Area | Before (v2.1) | Updated Code (v2.2) | How It Is Improved |
-| :--- | :--- | :--- | :--- |
-| **AS9102 Form 3 Fields** | Export contained general nominals and tolerances, but omitted standard inspection report fields. | Added `upper_limit`, `lower_limit`, `char_designator`, and `inspection_tool` to data models, sidebar editor, and Excel generator. | Conforms directly with First Article Inspection (FAI) Form 3 standards required by aerospace and precision manufacturing. |
-| **Automated Limit Calculation** | Users had to manually calculate max and min limits from nominals and asymmetric tolerances. | Implemented `_calculate_limits` in backend parser with real-time UI synchronization in frontend editor. | Eliminates manual arithmetic errors by computing Upper Limit ($Max$) and Lower Limit ($Min$) automatically. |
-| **Spatial Band Ordering** | Balloon numbering was based on raw extraction sequence, jumping erratically across the drawing. | Grouped annotations into horizontal visual bands (~150px) and sorted left-to-right (top-to-bottom, left-to-right flow). | Numbering follows the natural reading flow of engineering drawings, matching quality inspector expectations. |
-| **Non-Colliding Placement** | Initial balloon positions used fixed `(+60, -60)` diagonal offset, frequently colliding on dense drawings. | Added `_pick_best_balloon_position` to evaluate candidate vector angles, penalize existing balloons, and avoid borders. | Prevents balloons from clumping upon initial detection and minimizes manual repositioning effort. |
-| **Feature Clearance Repulsion** | Repulsion physics only pushed balloons apart from each other, occasionally landing directly on the dimension text. | Added feature clearance repulsion (`min_feat_clearance = 28px`) to ensure balloons never obscure measured digits. | Keeps dimension values clearly visible behind balloon circles while leader lines maintain connection. |
-| **Dynamic Title Block Detection** | Relied purely on a fixed 78% Y-coordinate exclusion cutoff, failing on compact or varied title block tables. | Added `_detect_title_block_bounds` scanning for keyword anchors (`drawn`, `material`, `scale`, etc.) in the lower canvas. | Adapts dynamically to diverse title block sizes and shapes across different CAD drafting templates. |
-| **Selective Excel Export** | Export was all-or-nothing (`GET /export/{id}` exported every balloon). | Added `POST /export/{id}/selected` and query param filtering (`?balloon_ids=...`), paired with frontend multi-select checkboxes. | Allows quality engineers to export targeted inspection sheets for specific critical dimensions or sub-assemblies. |
-| **Sidebar & Toolbar UI** | Single balloon inspector with no batch selection or tool assignment capabilities. | Added batch select checkboxes, "Select All", designator badges (*Critical*, *Major*, *Standard*, *Reference*, *Basic*), and tool dropdown. | Provides a high-efficiency inspection workbench for reviewing and classifying drawing callouts. |
+2. **`fields` variable undefined in OCR path.** In `detector.py` line 989, `_detect_ocr_impl` references `**fields` in the annotation dict, but `fields` is never assigned in that scope. `_parse_annotation_fields` is not called in the OCR path before this reference. This will raise a `NameError` at runtime for every scanned drawing. The fix is to call `fields = _parse_annotation_fields(clean_text, ann_type)` before the `classified.append(...)` call.
 
----
+2. **Duplicate `return fields` statement.** `_parse_annotation_fields` in `detector.py` has two consecutive `return fields` statements at lines 343–344 (both are `return fields`). The second is dead code but is harmless.
 
-### v2.1 — Interactive Ballooning & CAD Precision Tolerancing
+3. **`poppler-utils` installed in Dockerfile unnecessarily.** The backend Dockerfile installs `poppler-utils`, but PDF rendering is done entirely by PyMuPDF which does not require Poppler. This adds image size without benefit.
 
-| Feature / Area | Before (Previous Implementation) | Updated Code | How It Is Improved |
-| :--- | :--- | :--- | :--- |
-| **Interactive Canvas Click** | Clicking a balloon on the canvas had no inspector response; user had to hunt through the sidebar. | Added two-way sync: `onBalloonClick` triggers `selectedBalloonId`, auto-expands row and smooth-scrolls into view. | Instantly view and inspect any balloon's full data sheet with a single click on the drawing. |
-| **Balloon Drag & Leader Line** | Dragging a balloon moved both the badge `(x, y)` and the feature point `(feature_x, feature_y)`, detaching from the target. | Leader line anchor `(feature_x, feature_y)` stays firmly pinned to the CAD feature when moving the badge. | Keeps the pointer anchored to the exact dimension while freely decluttering badge positions. |
-| **Canvas Drag State Management** | `mouseup` listener was attached only to `<canvas>`; dragging outside canvas caused balloons to stick to cursor. | Moved mouse listeners to window level with proper cleanup on unmount. | Smooth drag-and-drop experience that never gets stuck, even on rapid mouse movements. |
-| **Stacked Bilateral Tolerances** | Multi-line stacked tolerances (e.g. `+0.039` over `0.000`) were split into separate fragments or dropped signs. | Implemented Y-proximity clustering in `_extract_stacked_tolerances` to correctly associate upper and lower limits. | Accurately extracts upper (`+0.039`) and lower (`+0.000`) tolerances into distinct fields for FAI compliance. |
-| **Chamfer & Degree Symbol Parsing** | MacRoman/Windows-1252 degree symbol `\x83` (`ƒ`) was unhandled; chamfers like `1x45°` were marked as "Notes" with empty nominals. | Added `_DEGREE_FIXUP` dictionary and normalization in `detector.py`. | Chamfers like `1x45°` are correctly classified as **Dimension**, nominal: `1x45°`, process: `CHAMFER`. |
-| **ISO Fit Classification** | Early returns in `_parse_annotation_fields` bypassed ISO fits (`H8`, `H11`, `H12`) or lumped them into nominal text. | Extracted ISO fits into dedicated `tolerance_zone` attribute and prevented premature exit in the parser. | Fit grades are cleanly categorized and exported to the dedicated Tolerance Zone column in Excel. |
-| **Inspection Data Export** | Missing tolerance bounds and fit classifications in exported reports. | Full export integration for nominal values, upper/lower tolerances, ISO fits, and machining processes. | Produces professional, audit-ready Excel reports for Quality Control and First Article Inspection. |
+4. **Frontend Docker image runs `npm run dev` in production.** The frontend Dockerfile runs the Vite development server (`npm run dev --host`) rather than building a static bundle and serving it with a lightweight server (e.g. nginx). This is unsuitable for production deployment.
 
----
+5. **No authentication or authorization.** All endpoints are publicly accessible. Any client that can reach port 8000 can upload, modify, or delete any drawing.
 
-### v2.0 — Hybrid Detection Engine
+6. **Storage files accumulate indefinitely.** Uploaded PDFs, rendered PNGs, and exported XLSX files in `storage/` are never automatically cleaned up.
 
-**Detection overhaul — 0 → 61 balloons on a real A3 engineering drawing:**
+7. **CORS allows only `localhost:5173` and `localhost:5174`.** Deployment to any other origin requires editing the `allow_origins` list in `main.py`.
 
-- **Native PDF extraction** (`detect_from_pdf_page`) as primary path — reads exact vector text from digital CAD PDFs in < 1 second. No OCR errors, no confidence thresholds, no image processing overhead.
-- **Improved OCR fallback** for scanned drawings — single full-page Tesseract call (was: one call per contour, 500+ OS processes, 31 seconds per page).
-- **Strict classification** — `_DIM_PATTERNS` regex requires engineering prefixes (Ø, R, M, H, °, mm, decimal). Was: any text containing a single digit was classified as a Dimension.
-- **Title block exclusion** fixed — was disabled for landscape drawings (all CAD drawings are landscape). Now 78% cutoff for all orientations.
-- **Confidence thresholds** raised — hard floor 40 (was 15), pass threshold 50 (was 45). Eliminates OCR hallucinations on dimension lines and hatching.
-- **Structured field parsing** (`_parse_annotation_fields`) — `nominal_value`, `tolerance_upper`, `tolerance_lower`, `surface_finish`, `datum_ref`, `tolerance_zone`, `quantity`, `material` are now auto-populated in MongoDB, the sidebar editor, and Excel export.
+8. **`react-router-dom`, `react-pdf`, and `pdfjs-dist` are listed as dependencies but unused.** The active code path does not use these packages. They inflate the bundle unnecessarily.
 
-**Bug fixes:**
-- `import pymupdf` replaces deprecated `import fitz`
-- RGBA 4-channel PDF renders no longer crash `cv2.COLOR_BGR2GRAY`
-- YOLO balloon coordinates were scaled to a 1000px thumbnail — now use native image coordinates
-- Manual balloon add used `count+1` (collides after delete) — now uses `max(balloon_no)+1`
-- Sidebar `DetailField` showed stale data when switching between balloons — `useEffect` sync added
+9. **`BalloonLayer.jsx`, `BalloonEditor.jsx`, `PDFViewer.jsx`, `AboutPage.jsx`, `UploadPage.jsx`** are present in the source tree but not reachable from the active application. `App.jsx` does not render these components or import them.
 
-**Frontend:**
-- Balloon drag & drop — move the balloon body or the leader line endpoint
-- Styled in-app confirmation dialog replaces blocking `window.confirm()`
-- Centralized API URL in `src/api.js` (was hardcoded in 4 separate files)
-- `frontend/.env.example` template added for new contributors
+10. **The backend `src/` Node.js skeleton** (`backend/src/`) is unreachable and partially unimplemented (several controller files are empty). It would start a conflicting Express server on port 5000 if `npm start` were run in the `backend/` directory.
+
+11. **`processing-service/app/`** subdirectory files (`routes.py`, `detector.py`, `tesseract_engine.py`, `balloon_pipeline.py`) are all empty. Only `processing-service/main.py` contains code and it uses `pdf2image` (which requires Poppler) and hardcodes a Windows Tesseract path.
+
+12. **YOLO model file `balloon_detector.pt` is not included** in the repository. Without it, `POST /detect-existing-balloons` falls back to the OpenCV contour-based detector.
+
+13. **Multi-page export exports all balloons across all pages** regardless of the `currentPage` shown in the UI. This is by design but may surprise users who expect page-scoped export.
 
 ---
 
-*Built with FastAPI · PyMuPDF · OpenCV · Tesseract · React · MongoDB · openpyxl*
+## Roadmap / Future Work
+
+- Fix the `fields` undefined bug in the OCR path (`detector.py` line 989).
+- Replace the frontend Dockerfile with a production-ready nginx-based image.
+- Add authentication (at minimum an API key).
+- Add automatic cleanup of old storage files (TTL or on new upload).
+- Remove unused Node.js skeleton and legacy frontend components.
+- Implement the YOLO training data pipeline so `balloon_detector.pt` can be reproduced.
+- Add support for multi-page export scoped to the current page.
+- Write automated tests (none currently exist).
+
+---
+
+## Testing
+
+No automated tests exist in this repository. There is no `tests/` directory, no test framework configured in either `package.json` (the `test` script outputs an error message) or `requirements.txt`. All validation has been manual.
+
+---
+
+## License
+
+TODO: add a license file.
+
+## Author
+
+Vidhan Manihar — [github.com/vidhan13i](https://github.com/vidhan13i)
