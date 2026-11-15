@@ -701,10 +701,10 @@ No automated tests exist in this repository. There is no `tests/` directory, no 
 
 ---
 
-## License
+## Authors
 
-TODO: add a license file.
-
-## Author
-
-Vidhan Manihar — [github.com/vidhan13i](https://github.com/vidhan13i)
+| Name | GitHub |
+|------|--------|
+| Vidhan Manihar | [vidhan13i](https://github.com/vidhan13i) |
+| Manas Chougule | [manasgeek](https://github.com/manasgeek) |
+| Vividha Bhirud | [VividhaBhirud](https://github.com/VividhaBhirud) |
