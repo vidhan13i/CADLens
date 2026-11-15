@@ -2,10 +2,13 @@
 
 Automatically detect, number, and export dimensional annotations from engineering PDF drawings using native vector text extraction, an OCR fallback pipeline, and an interactive canvas editor.
 
-<!-- TODO: add a screenshot -->
-![CADLens](docs/screenshot.png)
+**Annotate screen** — detected balloons overlaid on the engineering drawing, with the sidebar showing all 64 extracted annotations:
 
-> **Note:** The file `docs/screenshot.png` does not yet exist. Add a screenshot of the annotate screen here.
+![CADLens — Annotate Screen](docs/screenshot.jpg)
+
+**Export screen** — the generated Excel inspection report with all balloon data populated:
+
+![CADLens — Excel Export](docs/screenshot-export.jpg)
 
 ---
 
