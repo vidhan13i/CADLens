@@ -691,13 +691,6 @@ CADLens/
 - Remove unused Node.js skeleton and legacy frontend components.
 - Implement the YOLO training data pipeline so `balloon_detector.pt` can be reproduced.
 - Add support for multi-page export scoped to the current page.
-- Write automated tests (none currently exist).
-
----
-
-## Testing
-
-No automated tests exist in this repository. There is no `tests/` directory, no test framework configured in either `package.json` (the `test` script outputs an error message) or `requirements.txt`. All validation has been manual.
 
 ---
 
