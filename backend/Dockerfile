@@ -14,9 +14,12 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
+# Set pip timeout globally so large wheels (e.g. ultralytics) don't abort on slow connections
+RUN pip config set global.timeout 120
+
 # Copy and install Python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --timeout=120 --retries=5 -r requirements.txt
 
 # Copy the backend code
 COPY . .
